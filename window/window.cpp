@@ -7,13 +7,18 @@
 
 #ifdef __WIN32__
 #include <windows.h>
-typedef void (__cdecl *FnRunApp)(void);
+#define ECABI __cdecl
 #endif
+
+enum FullscreenType {
+    FULLSCREEN_NONE = 0,
+    FULLSCREEN_REAL = 1,
+    FULLSCREEN_DESKTOP = 2,
+};
 
 enum RendererMessageType {
     SET_WINDOW_SIZE = 1,
     SET_FULLSCREEN,
-    SET_FULLSCREEN_BORDERLESS_WINDOW,
     SET_BORDERLESS,
     SET_WINDOW_TITLE,
 };
@@ -31,10 +36,13 @@ struct RendererMessage {
     };
 };
 
+typedef uint32_t (ECABI *FnMessageRenderer)(const RendererMessage*);
+typedef void (ECABI *FnRunApp)(FnMessageRenderer);
+
 static uint32_t gUserEventNum = 0;
 
 extern "C" {
-    uint32_t FaiscaMessageRenderer(const RendererMessage *msg) {
+    uint32_t ECABI FaiscaMessageRenderer(const RendererMessage *msg) {
         RendererMessage *ourMessage = new RendererMessage;
         *ourMessage = *msg;
         if (msg->type == SET_WINDOW_TITLE) {
@@ -59,9 +67,15 @@ extern "C" {
     }
 }
 
-void startFaiscaAppThread(void);
+FnRunApp getFaiscaAppFn(const char* sharedObjectFilepath);
 
 int main(int argc, char *argv[]) {
+    if (argc < 2) {
+        std::cerr << "Missing faisca game shared object argument" << std::endl;
+        return 1;
+    }
+    const char* sharedObjectFilepath = argv[1];
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         std::cerr << "Failed to initialize SDL2: " << SDL_GetError() << std::endl;
         return 1;
@@ -85,7 +99,8 @@ int main(int argc, char *argv[]) {
     }
     gUserEventNum = customEventType;
 
-    startFaiscaAppThread();
+    FnRunApp runApp = getFaiscaAppFn(sharedObjectFilepath);
+    std::thread appFnThread(runApp, FaiscaMessageRenderer);
 
     SDL_Event e;
     bool running = true;
@@ -103,11 +118,12 @@ int main(int argc, char *argv[]) {
                             SDL_SetWindowSize(window, msg->windowSize.width, msg->windowSize.height);
                             break;
                         case SET_FULLSCREEN:
-                        case SET_FULLSCREEN_BORDERLESS_WINDOW:
                             SDL_SetWindowFullscreen(
                                 window,
-                                (msg->type == SET_FULLSCREEN ?
-                                    SDL_WINDOW_FULLSCREEN : SDL_WINDOW_FULLSCREEN_DESKTOP
+                                (msg->fullscreen == FULLSCREEN_NONE ?
+                                    0 : (msg->fullscreen == FULLSCREEN_REAL ?
+                                        SDL_WINDOW_FULLSCREEN : SDL_WINDOW_FULLSCREEN_DESKTOP
+                                    )
                                 )
                             );
                             break;
@@ -129,23 +145,30 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    appFnThread.join();
+
     SDL_DestroyWindow(window);
     SDL_Quit();
 
     return 0;
 }
 
-void startFaiscaAppThread(void) {
-    HINSTANCE instance = LoadLibrary(TEXT("FaiscaApp.dll"));
+FnRunApp ECABI getFaiscaAppFn(const char *sharedObjectFilepath) {
+    int requiredLength = MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, NULL, 0);
+    wchar_t *sharedObjectFilepathW = new wchar_t[requiredLength];
+    MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, sharedObjectFilepathW, requiredLength);
+
+    HINSTANCE instance = LoadLibraryW(sharedObjectFilepathW);
     if (instance == NULL) {
-        std::cerr << "Failed to load FaiscaApp.dll" << std::endl;
+        std::cerr << "Failed to load '" << sharedObjectFilepath << "'" <<std::endl;
         exit(1);
     }
 
     FnRunApp fnRunApp = reinterpret_cast<FnRunApp>(GetProcAddress(instance, "faisca_run_app"));
     if (fnRunApp == nullptr) {
         std::cerr << "Failed to load 'faisca_run_app' from DLL" << std::endl;
+        exit(1);
     }
 
-    std::thread t(fnRunApp);
+    return fnRunApp;
 }

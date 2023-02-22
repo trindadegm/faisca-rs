@@ -7,6 +7,11 @@ edition = "2021"
 name = "info"
 path = "examples/info.rs"
 
+[lib]
+name = "faisca"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 ash = "0.37"
 log = "0.4"
