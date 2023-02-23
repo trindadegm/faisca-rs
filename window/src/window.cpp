@@ -3,47 +3,19 @@
 #include <iostream>
 #include <vector>
 #include <SDL.h>
+#include <SDL_vulkan.h>
 #include <thread>
 
-#ifdef __WIN32__
-#include <windows.h>
-#define ECABI __cdecl
-#endif
+#include <defines.hpp>
+#include <dylib.hpp>
 
-enum FullscreenType {
-    FULLSCREEN_NONE = 0,
-    FULLSCREEN_REAL = 1,
-    FULLSCREEN_DESKTOP = 2,
-};
-
-enum RendererMessageType {
-    SET_WINDOW_SIZE = 1,
-    SET_FULLSCREEN,
-    SET_BORDERLESS,
-    SET_WINDOW_TITLE,
-};
-
-struct RendererMessage {
-    uint32_t type;
-    union {
-        struct {
-            uint32_t width;
-            uint32_t height;
-        } windowSize;
-        uint8_t fullscreen;
-        uint8_t borderless;
-        const char *windowTitle;
-    };
-};
-
-typedef uint32_t (ECABI *FnMessageRenderer)(const RendererMessage*);
-typedef void (ECABI *FnRunApp)(FnMessageRenderer);
+using namespace faisca;
 
 static uint32_t gUserEventNum = 0;
 
 extern "C" {
-    uint32_t ECABI FaiscaMessageRenderer(const RendererMessage *msg) {
-        RendererMessage *ourMessage = new RendererMessage;
+    uint32_t ECABI FaiscaMessageWindow(const WindowMessage *msg) {
+        WindowMessage *ourMessage = new WindowMessage;
         *ourMessage = *msg;
         if (msg->type == SET_WINDOW_TITLE) {
             // We must copy the pointed data so that we own it
@@ -88,9 +60,17 @@ int main(int argc, char *argv[]) {
     );
 
     if (window == nullptr) {
-        std::cerr << "Failed to create SDL2 window: " << SDL_GetError() << std::endl;
+        std::cerr << "Failed to create SDL window: " << SDL_GetError() << std::endl;
         return 1;
     }
+
+    unsigned int numExtensions = 0;
+    if (!SDL_Vulkan_GetInstanceExtensions(window, &numExtensions, nullptr)) {
+        std::cerr << "Failed to query SDL instance extensions: " << SDL_GetError() << std::endl;
+        return 1;
+    }
+    const char **requiredExtensions = new const char*[numExtensions];
+    SDL_Vulkan_GetInstanceExtensions(window, &numExtensions, requiredExtensions);
 
     uint32_t customEventType = SDL_RegisterEvents(1);
     if (customEventType == 0xFFFFFFFF) {
@@ -99,8 +79,10 @@ int main(int argc, char *argv[]) {
     }
     gUserEventNum = customEventType;
 
-    FnRunApp runApp = getFaiscaAppFn(sharedObjectFilepath);
-    std::thread appFnThread(runApp, FaiscaMessageRenderer);
+    DyLib appLib(sharedObjectFilepath);
+    FnRunApp runApp = reinterpret_cast<FnRunApp>(appLib.getProcAddr("faisca_run_app"));
+    FnMessageApp messageApp = reinterpret_cast<FnMessageApp>(appLib.getProcAddr("faisca_message_app"));
+    std::thread appFnThread(runApp, FaiscaMessageWindow);
 
     SDL_Event e;
     bool running = true;
@@ -112,7 +94,7 @@ int main(int argc, char *argv[]) {
                     running = false;
                     break;
                 case SDL_USEREVENT: {
-                    const RendererMessage *msg = static_cast<const RendererMessage*>(e.user.data1);
+                    const WindowMessage *msg = static_cast<const WindowMessage*>(e.user.data1);
                     switch (msg->type) {
                         case SET_WINDOW_SIZE:
                             SDL_SetWindowSize(window, msg->windowSize.width, msg->windowSize.height);
@@ -153,22 +135,22 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-FnRunApp ECABI getFaiscaAppFn(const char *sharedObjectFilepath) {
-    int requiredLength = MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, NULL, 0);
-    wchar_t *sharedObjectFilepathW = new wchar_t[requiredLength];
-    MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, sharedObjectFilepathW, requiredLength);
+// FnRunApp ECABI getFaiscaAppFn(const char *sharedObjectFilepath) {
+//     int requiredLength = MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, NULL, 0);
+//     wchar_t *sharedObjectFilepathW = new wchar_t[requiredLength];
+//     MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, sharedObjectFilepathW, requiredLength);
 
-    HINSTANCE instance = LoadLibraryW(sharedObjectFilepathW);
-    if (instance == NULL) {
-        std::cerr << "Failed to load '" << sharedObjectFilepath << "'" <<std::endl;
-        exit(1);
-    }
+//     HINSTANCE instance = LoadLibraryW(sharedObjectFilepathW);
+//     if (instance == NULL) {
+//         std::cerr << "Failed to load '" << sharedObjectFilepath << "'" <<std::endl;
+//         exit(1);
+//     }
 
-    FnRunApp fnRunApp = reinterpret_cast<FnRunApp>(GetProcAddress(instance, "faisca_run_app"));
-    if (fnRunApp == nullptr) {
-        std::cerr << "Failed to load 'faisca_run_app' from DLL" << std::endl;
-        exit(1);
-    }
+//     FnRunApp fnRunApp = reinterpret_cast<FnRunApp>(GetProcAddress(instance, "faisca_run_app"));
+//     if (fnRunApp == nullptr) {
+//         std::cerr << "Failed to load 'faisca_run_app' from DLL" << std::endl;
+//         exit(1);
+//     }
 
-    return fnRunApp;
-}
+//     return fnRunApp;
+// }

@@ -1,4 +1,4 @@
-use std::{ffi::{CString, CStr, NulError}, ops::Deref};
+use std::ffi::{CString, CStr, NulError};
 
 #[repr(transparent)]
 pub struct SafeCString(*const i8);
@@ -10,11 +10,8 @@ impl SafeCString {
         std::mem::forget(string);
         Ok(SafeCString(pointer))
     }
-}
-impl Deref for SafeCString {
-    type Target = CStr;
 
-    fn deref(&self) -> &Self::Target {
+    pub fn as_cstr(&self) -> &CStr {
         unsafe { CStr::from_ptr(self.0) }
     }
 }
@@ -34,7 +31,7 @@ pub enum Fullscreen {
 }
 
 #[repr(C, u32)]
-pub enum RendererMessage {
+pub enum WindowMessage {
     SetWindowSize {
         width: u32,
         height: u32,
@@ -44,3 +41,10 @@ pub enum RendererMessage {
     SetWindowTitle(SafeCString),
 }
 
+#[repr(C, u32)]
+pub enum AppMessage {
+    VulkanRequiredInstanceExtensions {
+        names: *const *const i8,
+        count: usize,
+    },
+}

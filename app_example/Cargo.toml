@@ -1,0 +1,12 @@
+[package]
+name = "app_example"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "app_example"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+faisca = { path = "../faisca-rs" }

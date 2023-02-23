@@ -8,6 +8,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_subdirectory(SDL2)
 
-add_executable(Window window.cpp)
-target_include_directories(Window PUBLIC SDL2/include)
+set(FAISCA_SOURCES
+    src/window.cpp
+    src/dylib_load.cpp
+)
+
+add_executable(Window ${FAISCA_SOURCES})
+target_include_directories(Window PUBLIC include SDL2/include)
 target_link_libraries(Window PUBLIC SDL2 SDL2main)
