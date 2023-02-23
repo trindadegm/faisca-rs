@@ -24,7 +24,7 @@ impl WindowMessenger {
 macro_rules! app_entry {
     ($faisca_fn:ident) => {
         #[no_mangle]
-        pub unsafe extern "C" fn faisca_run_app(message_window: extern "C" fn(*const WindowMessage) -> u32) {
+        pub unsafe extern "C" fn faisca_run_app(message_window: extern "C" fn(*const AppMessage) -> u32) {
             std::panic::catch_unwind(|| {
                 $faisca_fn(WindowMessenger::from_raw(message_window));
             }).unwrap_or_else(|_| {
