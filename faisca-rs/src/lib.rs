@@ -1,22 +1,22 @@
 mod ffi;
 mod renderer;
 
-pub use ffi::{WindowMessage, SafeCString, Fullscreen, AppMessage};
+pub use ffi::{AppMessage, SafeCString, Fullscreen, WindowMessage};
 pub use renderer::Renderer;
 
 pub struct WindowMessenger {
-    messenger: unsafe extern "C" fn(*const WindowMessage) -> u32,
+    messenger: unsafe extern "C" fn(*const AppMessage) -> u32,
 }
 
 impl WindowMessenger {
-    pub unsafe fn from_raw(messenger: unsafe extern "C" fn(*const WindowMessage) -> u32) -> Self {
+    pub unsafe fn from_raw(messenger: unsafe extern "C" fn(*const AppMessage) -> u32) -> Self {
         Self {
             messenger
         }
     }
 
-    pub fn send(&self, msg: &WindowMessage) {
-        unsafe { (self.messenger)(msg as *const WindowMessage) };
+    pub fn send(&self, msg: &AppMessage) {
+        unsafe { (self.messenger)(msg as *const AppMessage) };
     }
 }
 
@@ -34,10 +34,10 @@ macro_rules! app_entry {
     }
 }
 
-pub unsafe extern "C" fn faisca_message_app(msg: *const AppMessage) -> u32 {
+pub unsafe extern "C" fn faisca_message_app(msg: *const WindowMessage) -> u32 {
     std::panic::catch_unwind(|| {
         match *msg {
-            AppMessage::VulkanRequiredInstanceExtensions { names, count } => {
+            WindowMessage::VulkanRequiredInstanceExtensions { names, count } => {
                 let names = std::slice::from_raw_parts(names, count);
             }
         }

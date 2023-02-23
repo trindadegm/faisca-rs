@@ -31,7 +31,7 @@ pub enum Fullscreen {
 }
 
 #[repr(C, u32)]
-pub enum WindowMessage {
+pub enum AppMessage {
     SetWindowSize {
         width: u32,
         height: u32,
@@ -42,7 +42,7 @@ pub enum WindowMessage {
 }
 
 #[repr(C, u32)]
-pub enum AppMessage {
+pub enum WindowMessage {
     VulkanRequiredInstanceExtensions {
         names: *const *const i8,
         count: usize,

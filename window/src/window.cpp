@@ -14,8 +14,8 @@ using namespace faisca;
 static uint32_t gUserEventNum = 0;
 
 extern "C" {
-    uint32_t ECABI FaiscaMessageWindow(const WindowMessage *msg) {
-        WindowMessage *ourMessage = new WindowMessage;
+    uint32_t ECABI FaiscaMessageWindow(const AppMessage *msg) {
+        AppMessage *ourMessage = new AppMessage;
         *ourMessage = *msg;
         if (msg->type == SET_WINDOW_TITLE) {
             // We must copy the pointed data so that we own it
@@ -94,7 +94,7 @@ int main(int argc, char *argv[]) {
                     running = false;
                     break;
                 case SDL_USEREVENT: {
-                    const WindowMessage *msg = static_cast<const WindowMessage*>(e.user.data1);
+                    const AppMessage *msg = static_cast<const AppMessage*>(e.user.data1);
                     switch (msg->type) {
                         case SET_WINDOW_SIZE:
                             SDL_SetWindowSize(window, msg->windowSize.width, msg->windowSize.height);
@@ -134,23 +134,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
-// FnRunApp ECABI getFaiscaAppFn(const char *sharedObjectFilepath) {
-//     int requiredLength = MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, NULL, 0);
-//     wchar_t *sharedObjectFilepathW = new wchar_t[requiredLength];
-//     MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, sharedObjectFilepath, -1, sharedObjectFilepathW, requiredLength);
-
-//     HINSTANCE instance = LoadLibraryW(sharedObjectFilepathW);
-//     if (instance == NULL) {
-//         std::cerr << "Failed to load '" << sharedObjectFilepath << "'" <<std::endl;
-//         exit(1);
-//     }
-
-//     FnRunApp fnRunApp = reinterpret_cast<FnRunApp>(GetProcAddress(instance, "faisca_run_app"));
-//     if (fnRunApp == nullptr) {
-//         std::cerr << "Failed to load 'faisca_run_app' from DLL" << std::endl;
-//         exit(1);
-//     }
-
-//     return fnRunApp;
-// }

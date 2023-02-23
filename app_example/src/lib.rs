@@ -1,4 +1,4 @@
-use faisca::{WindowMessage, WindowMessenger};
+use faisca::{AppMessage, WindowMessenger};
 
 fn entry(_messenger: WindowMessenger) {
 }

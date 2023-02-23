@@ -24,7 +24,7 @@ namespace faisca {
         SET_WINDOW_TITLE,
     };
 
-    struct WindowMessage {
+    struct AppMessage {
         uint32_t type;
         union {
             struct {
@@ -41,7 +41,7 @@ namespace faisca {
         VULKAN_INSTANCE_REQUIRED_EXTENSIONS = 1,
     };
 
-    struct AppMessage {
+    struct WindowMessage {
         uint32_t type;
         union {
             struct {
@@ -51,10 +51,10 @@ namespace faisca {
         };
     };
 
-    typedef uint32_t (ECABI *FnMessageWindow)(const WindowMessage*);
+    typedef uint32_t (ECABI *FnMessageWindow)(const AppMessage*);
 
     typedef void (ECABI *FnRunApp)(FnMessageWindow);
-    typedef uint32_t (ECABI *FnMessageApp)(const AppMessage*);
+    typedef uint32_t (ECABI *FnMessageApp)(const WindowMessage*);
 }
 
 #endif // FAISCA_DEFINES_HPP_
