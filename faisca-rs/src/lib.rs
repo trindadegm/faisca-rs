@@ -1,48 +1,66 @@
 mod ffi;
 mod renderer;
 
-pub use ffi::{AppMessage, SafeCString, Fullscreen, WindowMessage};
+pub use ffi::{
+    AppMessage, Fullscreen, MessageWindowFn, SafeCString, WindowInstance, WindowMessage,
+};
 pub use renderer::Renderer;
 
 pub struct WindowMessenger {
-    messenger: unsafe extern "C" fn(*const AppMessage) -> u32,
+    messenger: MessageWindowFn,
 }
 
 impl WindowMessenger {
-    pub unsafe fn from_raw(messenger: unsafe extern "C" fn(*const AppMessage) -> u32) -> Self {
-        Self {
-            messenger
-        }
+    pub unsafe fn from_raw(messenger: MessageWindowFn) -> Self {
+        Self { messenger }
     }
 
-    pub fn send(&self, msg: &AppMessage) {
-        unsafe { (self.messenger)(msg as *const AppMessage) };
+    pub fn send(&self, w: ffi::WindowInstance, msg: &AppMessage) {
+        unsafe { (self.messenger)(w, msg as *const AppMessage) };
     }
+}
+
+pub unsafe fn run_app(
+    w: ffi::WindowInstance,
+    message_window: ffi::MessageWindowFn,
+    entry_fn: impl FnOnce(ffi::WindowInstance, WindowMessenger) + std::panic::UnwindSafe,
+) {
+    std::panic::catch_unwind(|| {
+        entry_fn(w, WindowMessenger::from_raw(message_window));
+    })
+    .unwrap_or_else(|e| {
+        log::error!("App panicked: {e:?}");
+        std::process::abort();
+    });
 }
 
 #[macro_export]
 macro_rules! app_entry {
-    ($faisca_fn:ident) => {
+    ($entry_fn:ident) => {
         #[no_mangle]
-        pub unsafe extern "C" fn faisca_run_app(message_window: extern "C" fn(*const AppMessage) -> u32) {
-            std::panic::catch_unwind(|| {
-                $faisca_fn(WindowMessenger::from_raw(message_window));
-            }).unwrap_or_else(|_| {
-                std::process::abort();
-            });
+        pub unsafe extern "C" fn faisca_run_app(
+            w: $crate::WindowInstance,
+            message_window: $crate::MessageWindowFn,
+        ) {
+            $crate::run_app(w, message_window, $entry_fn);
         }
-    }
+    };
 }
 
-pub unsafe extern "C" fn faisca_message_app(msg: *const WindowMessage) -> u32 {
+#[no_mangle]
+pub unsafe extern "C" fn faisca_message_app(
+    w: ffi::WindowInstance,
+    msg: *const WindowMessage,
+) -> u32 {
     std::panic::catch_unwind(|| {
         match *msg {
             WindowMessage::VulkanRequiredInstanceExtensions { names, count } => {
-                let names = std::slice::from_raw_parts(names, count);
+                let names = std::slice::from_raw_parts(names, count).to_vec();
             }
         }
         0
-    }).unwrap_or_else(|e| {
+    })
+    .unwrap_or_else(|e| {
         log::error!("App panicked: {e:?}");
         std::process::abort()
     })

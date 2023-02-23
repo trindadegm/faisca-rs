@@ -14,7 +14,7 @@ using namespace faisca;
 static uint32_t gUserEventNum = 0;
 
 extern "C" {
-    uint32_t ECABI FaiscaMessageWindow(const AppMessage *msg) {
+    uint32_t ECABI FaiscaMessageWindow(WindowInstance, const AppMessage *msg) {
         AppMessage *ourMessage = new AppMessage;
         *ourMessage = *msg;
         if (msg->type == SET_WINDOW_TITLE) {
@@ -38,8 +38,6 @@ extern "C" {
         }
     }
 }
-
-FnRunApp getFaiscaAppFn(const char* sharedObjectFilepath);
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -82,7 +80,7 @@ int main(int argc, char *argv[]) {
     DyLib appLib(sharedObjectFilepath);
     FnRunApp runApp = reinterpret_cast<FnRunApp>(appLib.getProcAddr("faisca_run_app"));
     FnMessageApp messageApp = reinterpret_cast<FnMessageApp>(appLib.getProcAddr("faisca_message_app"));
-    std::thread appFnThread(runApp, FaiscaMessageWindow);
+    std::thread appFnThread(runApp, window, FaiscaMessageWindow);
 
     SDL_Event e;
     bool running = true;

@@ -1,4 +1,4 @@
-use std::ffi::{CString, CStr, NulError};
+use std::ffi::{CStr, CString, NulError};
 
 #[repr(transparent)]
 pub struct SafeCString(*const i8);
@@ -32,10 +32,7 @@ pub enum Fullscreen {
 
 #[repr(C, u32)]
 pub enum AppMessage {
-    SetWindowSize {
-        width: u32,
-        height: u32,
-    } = 1,
+    SetWindowSize { width: u32, height: u32 } = 1,
     SetFullscreen(Fullscreen),
     SetBorderless(bool),
     SetWindowTitle(SafeCString),
@@ -48,3 +45,8 @@ pub enum WindowMessage {
         count: usize,
     },
 }
+
+#[repr(transparent)]
+pub struct WindowInstance(usize);
+
+pub type MessageWindowFn = unsafe extern "C" fn(WindowInstance, *const AppMessage) -> u32;

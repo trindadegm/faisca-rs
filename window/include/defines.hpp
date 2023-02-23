@@ -51,10 +51,12 @@ namespace faisca {
         };
     };
 
-    typedef uint32_t (ECABI *FnMessageWindow)(const AppMessage*);
+    typedef void* WindowInstance;
 
-    typedef void (ECABI *FnRunApp)(FnMessageWindow);
-    typedef uint32_t (ECABI *FnMessageApp)(const WindowMessage*);
+    typedef uint32_t (ECABI *FnMessageWindow)(WindowInstance, const AppMessage*);
+
+    typedef void (ECABI *FnRunApp)(WindowInstance, FnMessageWindow);
+    typedef uint32_t (ECABI *FnMessageApp)(WindowInstance, const WindowMessage*);
 }
 
 #endif // FAISCA_DEFINES_HPP_
