@@ -27,6 +27,8 @@ pub enum RendererError {
     FailedToCreateDevice(vk::Result),
     #[error("Failed to create Vulkan swapchain, Vulkan error code: {0}")]
     FailedToCreateSwapchain(vk::Result),
+    #[error("Failed to create Vulkan image view, Vulkan error code: {0}")]
+    FailedToCreateImageView(vk::Result),
 }
 
 mod queue;
@@ -46,10 +48,16 @@ pub struct Renderer {
     swapchain_images: Vec<vk::Image>,
     swapchain_img_format: vk::SurfaceFormatKHR,
     swapchain_img_extent: vk::Extent2D,
+    swapchain_image_views: Vec<vk::ImageView>,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::debug!("Destroying Vulkan image views");
+        for &view in self.swapchain_image_views.iter() {
+            unsafe { self.device.destroy_image_view(view, None) };
+        }
+
         log::debug!("Destroying Vulkan swapchain");
         unsafe { self.swapchain_loader.destroy_swapchain(self.swapchain, None) };
 
@@ -267,6 +275,44 @@ impl Renderer {
                 .map_err(RendererError::VulkanInfoQueryFailed)?
         };
 
+        let swapchain_image_views: Vec<vk::ImageView> = swapchain_images
+            .iter()
+            .map(|&img| {
+                let img_view_info = vk::ImageViewCreateInfo {
+                    image: img,
+                    view_type: vk::ImageViewType::TYPE_2D,
+                    format: swapchain_img_format.format,
+                    components: vk::ComponentMapping {
+                        r: vk::ComponentSwizzle::IDENTITY,
+                        g: vk::ComponentSwizzle::IDENTITY,
+                        b: vk::ComponentSwizzle::IDENTITY,
+                        a: vk::ComponentSwizzle::IDENTITY,
+                    },
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                };
+
+                unsafe { device.as_ref().create_image_view(&img_view_info, None) }
+                    .map_err(RendererError::FailedToCreateImageView)
+            })
+            .collect::<Result<_, _>>()?;
+        let swapchain_image_views = OnDropDefer::new(
+            swapchain_image_views,
+            |siv| {
+                log::debug!("Defered swapchain image views drop called");
+                for view in siv {
+                    unsafe { device.as_ref().destroy_image_view(view, None) };
+                }
+            },
+        );
+
+        let swapchain_image_views = swapchain_image_views.take();
         let swapchain = swapchain.take();
         let device = device.take();
         let surface = surface.take();
@@ -287,6 +333,7 @@ impl Renderer {
             swapchain_images,
             swapchain_img_format,
             swapchain_img_extent,
+            swapchain_image_views,
         })
     }
 
