@@ -38,7 +38,10 @@ pub struct ResponseBinding {
 
 #[repr(C, u32)]
 pub enum AppMessage {
-    SetWindowSize { width: u32, height: u32 } = 1,
+    SetWindowSize {
+        width: u32,
+        height: u32,
+    } = 1,
     SetFullscreen(Fullscreen),
     SetBorderless(bool),
     SetWindowTitle(SafeCString),

@@ -15,10 +15,14 @@ pub const DEBUG_ENABLED: bool = true;
 pub const DEBUG_ENABLED: bool = false;
 
 const VK_LAYER_KHRONOS_VALIDATION: &'static [u8] = b"VK_LAYER_KHRONOS_validation\0";
-pub const VK_VALIDATION_LAYERS: [*const i8; 1] =
+const VK_VALIDATION_LAYERS: [*const i8; 1] =
     [VK_LAYER_KHRONOS_VALIDATION.as_ptr() as *const i8];
 
 const VK_EXT_DEBUG_UTILS_EXTENSION_NAME: &'static [u8] = b"VK_EXT_debug_utils\0";
+
+const VK_KHR_SWAPCHAIN_EXTENSION_NAME: &'static [u8] = b"VK_KHR_swapchain\0";
+const VK_REQUIRED_DEVICE_EXTENSIONS: [*const i8; 1] =
+    [VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr() as *const i8];
 
 #[derive(Clone, Copy)]
 pub struct WindowMessenger {

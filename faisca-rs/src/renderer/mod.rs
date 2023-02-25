@@ -1,5 +1,8 @@
-use crate::{util::OnDropDefer, WindowMessenger, WindowInstance, AppMessage, ffi::ResponseBinding};
-use ash::{extensions::{ext, khr}, vk::{self, Handle}};
+use crate::{ffi::ResponseBinding, util::OnDropDefer, AppMessage, WindowInstance, WindowMessenger};
+use ash::{
+    extensions::{ext, khr},
+    vk::{self, Handle},
+};
 use std::{ffi::CStr, mem::MaybeUninit};
 
 #[derive(thiserror::Error, Debug)]
@@ -18,7 +21,7 @@ pub enum RendererError {
     /// subset of those.
     #[error("The program requires some validation layers that are not available")]
     UnavailableValidationLayers(Box<[*const i8]>),
-    #[error("Failed to find an video adapter (GPU) supporting Vulkan")]
+    #[error("Failed to find a video adapter (GPU) supporting Vulkan")]
     NoAvailableVideoAdapter,
     #[error("Failed to create Vulkan device, Vulkan error code: {0}")]
     FailedToCreateDevice(vk::Result),
@@ -30,19 +33,20 @@ pub struct Renderer {
     entry: ash::Entry,
     instance: ash::Instance,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    surface: vk::SurfaceKHR,
     device: ash::Device,
     graphics_queue: vk::Queue,
-    surface: vk::SurfaceKHR,
+    present_queue: vk::Queue,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::debug!("Destroying Vulkan device");
+        unsafe { self.device.destroy_device(None) };
+
         log::debug!("Destroying Vulkan surface");
         let surface_ext = khr::Surface::new(&self.entry, &self.instance);
         unsafe { surface_ext.destroy_surface(self.surface, None) };
-
-        log::debug!("Destroying Vulkan device");
-        unsafe { self.device.destroy_device(None) };
 
         if let Some(debug_messenger) = self.debug_messenger {
             log::debug!("Destroying Vulkan debug utils");
@@ -55,7 +59,10 @@ impl Drop for Renderer {
     }
 }
 impl Renderer {
-    pub fn new(window: WindowInstance, messenger: WindowMessenger) -> Result<Renderer, RendererError> {
+    pub fn new(
+        window: WindowInstance,
+        messenger: WindowMessenger,
+    ) -> Result<Renderer, RendererError> {
         // And it begins!
         let entry = unsafe { ash::Entry::load()? };
 
@@ -156,31 +163,60 @@ impl Renderer {
             None
         };
 
-        let selected_physical_device = Self::select_physical_device(instance.as_ref())?;
+        let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
+        let mut binding =
+            unsafe { ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void) };
+        messenger.send(
+            window,
+            &AppMessage::CreateVulkanSurface {
+                instance: instance.as_ref().handle().as_raw(),
+                out_binding: &mut binding as *mut ResponseBinding,
+            },
+        );
+        binding.wait();
 
-        let device = Self::create_device(&entry, instance.as_ref(), selected_physical_device)?;
+        let surface = OnDropDefer::new(
+            vk::SurfaceKHR::from_raw(unsafe { surface.assume_init() }),
+            |s| {
+                let surface_ext = khr::Surface::new(&entry, instance.as_ref());
+                unsafe { surface_ext.destroy_surface(s, None) };
+            },
+        );
+
+        let selected_physical_device =
+            Self::select_physical_device(&entry, instance.as_ref(), *surface.as_ref())?;
+
+        let queue_indices = queue::QueueFamilyIndices::fetch(
+            &entry,
+            instance.as_ref(),
+            *surface.as_ref(),
+            selected_physical_device,
+        );
+
+        let device = Self::create_device(
+            &entry,
+            instance.as_ref(),
+            &queue_indices,
+            selected_physical_device,
+        )?;
         let device = OnDropDefer::new(device, |d| unsafe {
             d.destroy_device(None);
         });
 
-        let queue_indices =
-            queue::QueueFamilyIndices::fetch(instance.as_ref(), selected_physical_device);
-        let graphics_queue =
-            unsafe { device.as_ref().get_device_queue(queue_indices.graphics_family.unwrap(), 0) };
-
-        let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
-        let mut binding = unsafe {
-            ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void)
+        let graphics_queue = unsafe {
+            device
+                .as_ref()
+                .get_device_queue(queue_indices.graphics_family.unwrap(), 0)
         };
-        messenger.send(window, &AppMessage::CreateVulkanSurface {
-            instance: instance.as_ref().handle().as_raw(),
-            out_binding: &mut binding as *mut ResponseBinding,
-        });
-        binding.wait();
 
-        let surface = vk::SurfaceKHR::from_raw(unsafe { surface.assume_init() });
+        let present_queue = unsafe {
+            device
+                .as_ref()
+                .get_device_queue(queue_indices.present_family.unwrap(), 0)
+        };
 
         let device = device.take();
+        let surface = surface.take();
         let debug_messenger = debug_messenger.map(OnDropDefer::take);
         let instance = instance.take();
 
@@ -190,6 +226,7 @@ impl Renderer {
             debug_messenger,
             device,
             graphics_queue,
+            present_queue,
             surface,
         })
     }
@@ -291,7 +328,9 @@ impl Renderer {
     /// Picks the first device it finds that supports the operations we want to
     /// do (the first suitable device).
     fn select_physical_device(
+        entry: &ash::Entry,
         instance: &ash::Instance,
+        surface: vk::SurfaceKHR,
     ) -> Result<vk::PhysicalDevice, RendererError> {
         let devices = unsafe { instance.enumerate_physical_devices() }
             .map_err(RendererError::VulkanInfoQueryFailed)?;
@@ -302,7 +341,11 @@ impl Renderer {
             devices
                 .iter()
                 .cloned()
-                .find(|&d| Self::check_physical_device_suitability(instance, d))
+                .find(|&d| {
+                    let family_indices =
+                        queue::QueueFamilyIndices::fetch(entry, instance, surface, d);
+                    Self::check_physical_device_suitability(instance, &family_indices, d)
+                })
                 .ok_or(RendererError::NoAvailableVideoAdapter)
         }
     }
@@ -311,26 +354,63 @@ impl Renderer {
     /// operations the application needs.
     fn check_physical_device_suitability(
         instance: &ash::Instance,
+        family_indices: &queue::QueueFamilyIndices,
         physical_device: vk::PhysicalDevice,
     ) -> bool {
-        let indices = queue::QueueFamilyIndices::fetch(instance, physical_device);
-        indices.has_all()
+        family_indices.has_all() && {
+            let supported_device_extensions =
+                unsafe { instance.enumerate_device_extension_properties(physical_device) }
+                    .unwrap_or(Vec::new());
+            if crate::DEBUG_ENABLED {
+                let mut extension_list = String::new();
+                for supported_ext in supported_device_extensions.iter() {
+                    let supported_ext_name =
+                        unsafe { CStr::from_ptr(supported_ext.extension_name.as_ptr()) };
+                    extension_list
+                        .push_str(&format!("\n{}", supported_ext_name.to_string_lossy(),));
+                }
+                log::debug!(
+                    "Supported device extensions for device {physical_device:?}:{extension_list}"
+                );
+            }
+            crate::VK_REQUIRED_DEVICE_EXTENSIONS
+                .iter()
+                .map(|&cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
+                .all(|required_ext| {
+                    supported_device_extensions
+                        .iter()
+                        .map(|prop| prop.extension_name.as_ptr())
+                        .map(|cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
+                        .find(|&supported_ext| required_ext == supported_ext)
+                        .is_some()
+                })
+        }
     }
 
     fn create_device(
         entry: &ash::Entry,
         instance: &ash::Instance,
+        family_indices: &queue::QueueFamilyIndices,
         physical_device: vk::PhysicalDevice,
     ) -> Result<ash::Device, RendererError> {
-        let indices = queue::QueueFamilyIndices::fetch(instance, physical_device);
+        let mut queue_create_infos = Vec::new();
+        // Using a set, if there are any repeated queue indices, they will be
+        // reduced to a single one.
+        let unique_queue_indices = std::collections::HashSet::from([
+            family_indices.graphics_family,
+            family_indices.present_family,
+        ]);
 
         let priority = 1.0_f32;
-        let queue_create_info = vk::DeviceQueueCreateInfo {
-            queue_family_index: indices.graphics_family.unwrap(),
-            queue_count: 1,
-            p_queue_priorities: &priority as *const f32,
-            ..Default::default()
-        };
+        for unique_queue_index in unique_queue_indices {
+            let queue_create_info = vk::DeviceQueueCreateInfo {
+                queue_family_index: family_indices.graphics_family.unwrap(),
+                queue_count: 1,
+                p_queue_priorities: &priority as *const f32,
+                ..Default::default()
+            };
+            queue_create_infos.push(queue_create_info);
+        }
 
         let device_features = vk::PhysicalDeviceFeatures {
             ..Default::default()
@@ -343,8 +423,8 @@ impl Renderer {
         };
 
         let device_info = vk::DeviceCreateInfo {
-            p_queue_create_infos: &queue_create_info as *const vk::DeviceQueueCreateInfo,
-            queue_create_info_count: 1,
+            p_queue_create_infos: queue_create_infos.as_ptr(),
+            queue_create_info_count: queue_create_infos.len().try_into().unwrap(),
             p_enabled_features: &device_features as *const vk::PhysicalDeviceFeatures,
             enabled_extension_count: 0,
             pp_enabled_layer_names: if validation_layers.len() > 0 {
