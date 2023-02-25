@@ -426,7 +426,11 @@ impl Renderer {
             p_queue_create_infos: queue_create_infos.as_ptr(),
             queue_create_info_count: queue_create_infos.len().try_into().unwrap(),
             p_enabled_features: &device_features as *const vk::PhysicalDeviceFeatures,
-            enabled_extension_count: 0,
+            pp_enabled_extension_names: crate::VK_REQUIRED_DEVICE_EXTENSIONS.as_ptr(),
+            enabled_extension_count: crate::VK_REQUIRED_DEVICE_EXTENSIONS
+                .len()
+                .try_into()
+                .unwrap(),
             pp_enabled_layer_names: if validation_layers.len() > 0 {
                 validation_layers.as_ptr()
             } else {

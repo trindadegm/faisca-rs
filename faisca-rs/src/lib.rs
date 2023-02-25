@@ -15,8 +15,7 @@ pub const DEBUG_ENABLED: bool = true;
 pub const DEBUG_ENABLED: bool = false;
 
 const VK_LAYER_KHRONOS_VALIDATION: &'static [u8] = b"VK_LAYER_KHRONOS_validation\0";
-const VK_VALIDATION_LAYERS: [*const i8; 1] =
-    [VK_LAYER_KHRONOS_VALIDATION.as_ptr() as *const i8];
+const VK_VALIDATION_LAYERS: [*const i8; 1] = [VK_LAYER_KHRONOS_VALIDATION.as_ptr() as *const i8];
 
 const VK_EXT_DEBUG_UTILS_EXTENSION_NAME: &'static [u8] = b"VK_EXT_debug_utils\0";
 
