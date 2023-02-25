@@ -397,14 +397,14 @@ impl Renderer {
         // Using a set, if there are any repeated queue indices, they will be
         // reduced to a single one.
         let unique_queue_indices = std::collections::HashSet::from([
-            family_indices.graphics_family,
-            family_indices.present_family,
+            family_indices.graphics_family.unwrap(),
+            family_indices.present_family.unwrap(),
         ]);
 
         let priority = 1.0_f32;
         for unique_queue_index in unique_queue_indices {
             let queue_create_info = vk::DeviceQueueCreateInfo {
-                queue_family_index: family_indices.graphics_family.unwrap(),
+                queue_family_index: unique_queue_index,
                 queue_count: 1,
                 p_queue_priorities: &priority as *const f32,
                 ..Default::default()

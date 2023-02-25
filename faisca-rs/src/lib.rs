@@ -64,7 +64,7 @@ macro_rules! app_entry {
 
 #[no_mangle]
 pub unsafe extern "C" fn faisca_message_app(
-    w: ffi::WindowInstance,
+    _w: ffi::WindowInstance,
     msg: *const WindowMessage,
 ) -> u32 {
     match *msg {
