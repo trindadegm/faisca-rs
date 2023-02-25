@@ -65,7 +65,7 @@ pub enum WindowMessage {
 }
 
 impl ResponseBinding {
-    pub fn new(out: *mut std::ffi::c_void) -> Self {
+    pub unsafe fn new(out: *mut std::ffi::c_void) -> Self {
         let wait_flag = Box::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         Self {
             wait_flag: Box::leak(wait_flag),
@@ -75,6 +75,12 @@ impl ResponseBinding {
 
     pub fn wait_flag(&self) -> &(std::sync::Mutex<bool>, std::sync::Condvar) {
         unsafe { &*(self.wait_flag) }
+    }
+
+    pub fn reset(&self) {
+        let (ready_mutex, _) = self.wait_flag();
+        let mut ready_guard = ready_mutex.lock().unwrap();
+        *ready_guard = false;
     }
 
     pub fn wait(&self) {

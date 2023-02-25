@@ -169,7 +169,9 @@ impl Renderer {
             unsafe { device.as_ref().get_device_queue(queue_indices.graphics_family.unwrap(), 0) };
 
         let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
-        let mut binding = ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void);
+        let mut binding = unsafe {
+            ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void)
+        };
         messenger.send(window, &AppMessage::CreateVulkanSurface {
             instance: instance.as_ref().handle().as_raw(),
             out_binding: &mut binding as *mut ResponseBinding,
