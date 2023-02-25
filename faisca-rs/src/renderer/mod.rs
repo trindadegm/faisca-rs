@@ -25,28 +25,39 @@ pub enum RendererError {
     NoAvailableVideoAdapter,
     #[error("Failed to create Vulkan device, Vulkan error code: {0}")]
     FailedToCreateDevice(vk::Result),
+    #[error("Failed to create Vulkan swapchain, Vulkan error code: {0}")]
+    FailedToCreateSwapchain(vk::Result),
 }
 
 mod queue;
+mod swapchain_info;
 
 pub struct Renderer {
     entry: ash::Entry,
     instance: ash::Instance,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    surface_loader: khr::Surface,
     surface: vk::SurfaceKHR,
     device: ash::Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+    swapchain_loader: khr::Swapchain,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_img_format: vk::SurfaceFormatKHR,
+    swapchain_img_extent: vk::Extent2D,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::debug!("Destroying Vulkan swapchain");
+        unsafe { self.swapchain_loader.destroy_swapchain(self.swapchain, None) };
+
         log::debug!("Destroying Vulkan device");
         unsafe { self.device.destroy_device(None) };
 
         log::debug!("Destroying Vulkan surface");
-        let surface_ext = khr::Surface::new(&self.entry, &self.instance);
-        unsafe { surface_ext.destroy_surface(self.surface, None) };
+        unsafe { self.surface_loader.destroy_surface(self.surface, None) };
 
         if let Some(debug_messenger) = self.debug_messenger {
             log::debug!("Destroying Vulkan debug utils");
@@ -138,10 +149,13 @@ impl Renderer {
         // I'll use this ~beautiful~ `OnDropDefer` thingie to make sure we
         // destroy the things we create even in case we return earlier or panic.
         let instance = OnDropDefer::new(instance, |i| {
+            log::debug!("Defered instance destroy called");
             unsafe { i.destroy_instance(None) };
         });
 
         log::debug!("Vulkan Instance created");
+
+        let surface_loader = khr::Surface::new(&entry, instance.as_ref());
 
         // In debug mode, we make a debug messenger, that will give us feedback,
         // specially about all that validation thing we talked about earlier.
@@ -154,6 +168,7 @@ impl Renderer {
                     .map_err(RendererError::FailedToCreateDebugMessenger)?;
 
             let messenger = OnDropDefer::new(messenger, |m| {
+                log::debug!("Defered debug messenger destroy called");
                 let debug_utils = ext::DebugUtils::new(&entry, instance.as_ref());
                 unsafe { debug_utils.destroy_debug_utils_messenger(m, None) }
             });
@@ -164,13 +179,13 @@ impl Renderer {
         };
 
         let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
-        let mut binding =
+        let binding =
             unsafe { ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void) };
         messenger.send(
             window,
             &AppMessage::CreateVulkanSurface {
                 instance: instance.as_ref().handle().as_raw(),
-                out_binding: &mut binding as *mut ResponseBinding,
+                out_binding: &binding as *const ResponseBinding,
             },
         );
         binding.wait();
@@ -178,17 +193,22 @@ impl Renderer {
         let surface = OnDropDefer::new(
             vk::SurfaceKHR::from_raw(unsafe { surface.assume_init() }),
             |s| {
-                let surface_ext = khr::Surface::new(&entry, instance.as_ref());
-                unsafe { surface_ext.destroy_surface(s, None) };
+                log::debug!("Defered surface destroy called");
+                unsafe { surface_loader.destroy_surface(s, None) };
             },
         );
 
-        let selected_physical_device =
-            Self::select_physical_device(&entry, instance.as_ref(), *surface.as_ref())?;
+        let selected_physical_device = Self::select_physical_device(
+            &entry,
+            instance.as_ref(),
+            &surface_loader,
+            *surface.as_ref(),
+        )?;
 
         let queue_indices = queue::QueueFamilyIndices::fetch(
             &entry,
             instance.as_ref(),
+            &surface_loader,
             *surface.as_ref(),
             selected_physical_device,
         );
@@ -200,6 +220,7 @@ impl Renderer {
             selected_physical_device,
         )?;
         let device = OnDropDefer::new(device, |d| unsafe {
+            log::debug!("Defered device destroy called");
             d.destroy_device(None);
         });
 
@@ -215,6 +236,38 @@ impl Renderer {
                 .get_device_queue(queue_indices.present_family.unwrap(), 0)
         };
 
+        let swapchain_info = swapchain_info::SwapchainSupportInfo::fetch(
+            &surface_loader,
+            *surface.as_ref(),
+            selected_physical_device,
+        )
+        .unwrap();
+        let swapchain_loader = khr::Swapchain::new(instance.as_ref(), device.as_ref());
+        let (swapchain, swapchain_img_format, swapchain_img_extent) = Self::create_swapchain(
+            window,
+            messenger,
+            &swapchain_info,
+            *surface.as_ref(),
+            &queue_indices,
+            &swapchain_loader,
+        )
+        .map(|result| {
+            (
+                OnDropDefer::new(result.0, |s| {
+                    log::debug!("Defered swapchain destroy called");
+                    unsafe { swapchain_loader.destroy_swapchain(s, None) };
+                }),
+                result.1,
+                result.2,
+            )
+        })?;
+
+        let swapchain_images = unsafe {
+            swapchain_loader.get_swapchain_images(*swapchain.as_ref())
+                .map_err(RendererError::VulkanInfoQueryFailed)?
+        };
+
+        let swapchain = swapchain.take();
         let device = device.take();
         let surface = surface.take();
         let debug_messenger = debug_messenger.map(OnDropDefer::take);
@@ -224,10 +277,16 @@ impl Renderer {
             entry,
             instance,
             debug_messenger,
+            surface_loader,
+            surface,
             device,
             graphics_queue,
             present_queue,
-            surface,
+            swapchain_loader,
+            swapchain,
+            swapchain_images,
+            swapchain_img_format,
+            swapchain_img_extent,
         })
     }
 
@@ -330,6 +389,7 @@ impl Renderer {
     fn select_physical_device(
         entry: &ash::Entry,
         instance: &ash::Instance,
+        surface_loader: &khr::Surface,
         surface: vk::SurfaceKHR,
     ) -> Result<vk::PhysicalDevice, RendererError> {
         let devices = unsafe { instance.enumerate_physical_devices() }
@@ -342,9 +402,27 @@ impl Renderer {
                 .iter()
                 .cloned()
                 .find(|&d| {
-                    let family_indices =
-                        queue::QueueFamilyIndices::fetch(entry, instance, surface, d);
-                    Self::check_physical_device_suitability(instance, &family_indices, d)
+                    let family_indices = queue::QueueFamilyIndices::fetch(
+                        entry,
+                        instance,
+                        surface_loader,
+                        surface,
+                        d,
+                    );
+
+                    swapchain_info::SwapchainSupportInfo::fetch(surface_loader, surface, d)
+                        .map(|swapchain_info| {
+                            Self::check_physical_device_suitability(
+                                instance,
+                                &family_indices,
+                                &swapchain_info,
+                                d,
+                            )
+                        })
+                        .unwrap_or_else(|e| {
+                            log::error!("Failed to query device for swapchain support: {e}");
+                            false
+                        })
                 })
                 .ok_or(RendererError::NoAvailableVideoAdapter)
         }
@@ -355,36 +433,47 @@ impl Renderer {
     fn check_physical_device_suitability(
         instance: &ash::Instance,
         family_indices: &queue::QueueFamilyIndices,
+        swapchain_info: &swapchain_info::SwapchainSupportInfo,
         physical_device: vk::PhysicalDevice,
     ) -> bool {
-        family_indices.has_all() && {
-            let supported_device_extensions =
-                unsafe { instance.enumerate_device_extension_properties(physical_device) }
-                    .unwrap_or(Vec::new());
-            if crate::DEBUG_ENABLED {
-                let mut extension_list = String::new();
-                for supported_ext in supported_device_extensions.iter() {
-                    let supported_ext_name =
-                        unsafe { CStr::from_ptr(supported_ext.extension_name.as_ptr()) };
-                    extension_list
-                        .push_str(&format!("\n{}", supported_ext_name.to_string_lossy(),));
-                }
-                log::debug!(
-                    "Supported device extensions for device {physical_device:?}:{extension_list}"
-                );
+        family_indices.has_all()
+            && Self::check_device_supports_extensions(instance, physical_device)
+            && Self::check_swapchain_is_adequate(swapchain_info)
+    }
+
+    fn check_device_supports_extensions(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+    ) -> bool {
+        let supported_device_extensions =
+            unsafe { instance.enumerate_device_extension_properties(physical_device) }
+                .unwrap_or(Vec::new());
+        if crate::DEBUG_ENABLED {
+            let mut extension_list = String::new();
+            for supported_ext in supported_device_extensions.iter() {
+                let supported_ext_name =
+                    unsafe { CStr::from_ptr(supported_ext.extension_name.as_ptr()) };
+                extension_list.push_str(&format!("\n{}", supported_ext_name.to_string_lossy(),));
             }
-            crate::VK_REQUIRED_DEVICE_EXTENSIONS
-                .iter()
-                .map(|&cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
-                .all(|required_ext| {
-                    supported_device_extensions
-                        .iter()
-                        .map(|prop| prop.extension_name.as_ptr())
-                        .map(|cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
-                        .find(|&supported_ext| required_ext == supported_ext)
-                        .is_some()
-                })
+            log::debug!(
+                "Supported device extensions for device {physical_device:?}:{extension_list}"
+            );
         }
+        crate::VK_REQUIRED_DEVICE_EXTENSIONS
+            .iter()
+            .map(|&cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
+            .all(|required_ext| {
+                supported_device_extensions
+                    .iter()
+                    .map(|prop| prop.extension_name.as_ptr())
+                    .map(|cstr_ptr| unsafe { CStr::from_ptr(cstr_ptr) })
+                    .find(|&supported_ext| required_ext == supported_ext)
+                    .is_some()
+            })
+    }
+
+    fn check_swapchain_is_adequate(swapchain_info: &swapchain_info::SwapchainSupportInfo) -> bool {
+        !swapchain_info.formats.is_empty() && !swapchain_info.present_modes.is_empty()
     }
 
     fn create_device(
@@ -445,6 +534,80 @@ impl Renderer {
 
         unsafe { instance.create_device(physical_device, &device_info, None) }
             .map_err(RendererError::FailedToCreateDevice)
+    }
+
+    fn create_swapchain(
+        win: WindowInstance,
+        messenger: WindowMessenger,
+        swapchain_info: &swapchain_info::SwapchainSupportInfo,
+        surface: vk::SurfaceKHR,
+        queue_families: &queue::QueueFamilyIndices,
+        swapchain_loader: &khr::Swapchain,
+    ) -> Result<(vk::SwapchainKHR, vk::SurfaceFormatKHR, vk::Extent2D), RendererError> {
+        let surface_format = swapchain_info.select_format().unwrap();
+        let present_mode = swapchain_info.select_present_mode();
+
+        let mut extent = MaybeUninit::<crate::ffi::Extent2D>::uninit();
+        let out_binding =
+            unsafe { ResponseBinding::new(extent.as_mut_ptr() as *mut std::ffi::c_void) };
+        messenger.send(
+            win,
+            &AppMessage::QueryViewportExtents {
+                out_binding: &out_binding as *const ResponseBinding,
+            },
+        );
+        out_binding.wait();
+
+        let extent = unsafe { extent.assume_init() };
+        let crate::ffi::Extent2D { width, height } = extent;
+        log::debug!("Queried window extent: {width}, {height}");
+
+        let selected_extent = swapchain_info.select_extent(extent);
+
+        let image_count = swapchain_info.capabilities.min_image_count
+            + if swapchain_info.capabilities.min_image_count
+                != swapchain_info.capabilities.max_image_count
+            {
+                // If the number of images is not set in stone to be that one, we pick one more
+                1
+            } else {
+                // Otherwise we keep the required one, (add 0 does nothing)
+                0
+            };
+
+        let mut swapchain_create_info = vk::SwapchainCreateInfoKHR {
+            surface,
+            min_image_count: image_count,
+            image_format: surface_format.format,
+            image_color_space: surface_format.color_space,
+            image_extent: selected_extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            pre_transform: swapchain_info.capabilities.current_transform,
+            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+            present_mode,
+            clipped: vk::TRUE,
+            old_swapchain: vk::SwapchainKHR::null(),
+            ..Default::default()
+        };
+
+        let queue_family_indices = [
+            queue_families.graphics_family.unwrap(),
+            queue_families.present_family.unwrap(),
+        ];
+        if queue_families.graphics_family.unwrap() != queue_families.present_family.unwrap() {
+            swapchain_create_info.image_sharing_mode = vk::SharingMode::CONCURRENT;
+            swapchain_create_info.queue_family_index_count = 2;
+            swapchain_create_info.p_queue_family_indices = queue_family_indices.as_ptr();
+        } else {
+            swapchain_create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
+        }
+
+        unsafe {
+            swapchain_loader.create_swapchain(&swapchain_create_info, None)
+        }
+        .map(|swapchain| (swapchain, surface_format, selected_extent))
+        .map_err(RendererError::FailedToCreateSwapchain)
     }
 }
 

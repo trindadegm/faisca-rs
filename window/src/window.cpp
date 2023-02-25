@@ -134,6 +134,18 @@ int main(int argc, char *argv[]) {
                             message.responseNotifyBinding = msg->windowSurfaceCreateInfo.responseBinding;
                             messageApp(msgWindow, &message);
                         } break;
+                        case APPMSG_QUERY_VIEWPORT_EXTENT: {
+                            Extent2D *vkExtent2D = (Extent2D*) msg->queryResponseBinding->out;
+                            int width, height;
+                            SDL_GetWindowSizeInPixels(msgWindow, &width, &height);
+                            vkExtent2D->width = width;
+                            vkExtent2D->height = height;
+
+                            WindowMessage message = {};
+                            message.type = WINMSG_RESPONSE_NOTIFY;
+                            message.responseNotifyBinding = msg->queryResponseBinding;
+                            messageApp(msgWindow, &message);
+                        } break;
                         default:
                             break;
                     }

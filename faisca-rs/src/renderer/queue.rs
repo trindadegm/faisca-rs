@@ -1,4 +1,4 @@
-use ash::vk;
+use ash::{extensions::khr, vk};
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct QueueFamilyIndices {
@@ -10,6 +10,7 @@ impl QueueFamilyIndices {
     pub fn fetch(
         entry: &ash::Entry,
         instance: &ash::Instance,
+        surface_loader: &khr::Surface,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
     ) -> Self {
@@ -24,9 +25,8 @@ impl QueueFamilyIndices {
                 queue_family_indices.graphics_family = Some(i)
             }
 
-            let surface_ext = ash::extensions::khr::Surface::new(entry, instance);
             queue_family_indices.present_family = unsafe {
-                surface_ext.get_physical_device_surface_support(physical_device, i, surface)
+                surface_loader.get_physical_device_surface_support(physical_device, i, surface)
             }
             .ok()
             .map(|_| i);

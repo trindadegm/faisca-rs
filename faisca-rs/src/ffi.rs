@@ -45,9 +45,14 @@ pub enum AppMessage {
     SetFullscreen(Fullscreen),
     SetBorderless(bool),
     SetWindowTitle(SafeCString),
+    /// `out_binding` is a vulkan surface handle binding
     CreateVulkanSurface {
         instance: u64,
-        out_binding: *mut ResponseBinding,
+        out_binding: *const ResponseBinding,
+    },
+    /// `out_binding` is a `Extent2D` binding
+    QueryViewportExtents {
+        out_binding: *const ResponseBinding,
     },
 }
 
@@ -65,6 +70,12 @@ pub enum WindowMessage {
     ResponseNotify {
         binding_address: *const ResponseBinding,
     },
+}
+
+#[repr(C)]
+pub struct Extent2D {
+    pub width: u32,
+    pub height: u32,
 }
 
 impl ResponseBinding {

@@ -23,6 +23,7 @@ namespace faisca {
         APPMSG_SET_BORDERLESS,
         APPMSG_SET_WINDOW_TITLE,
         APPMSG_CREATE_VULKAN_SURFACE,
+        APPMSG_QUERY_VIEWPORT_EXTENT,
     };
 
     struct AppMessage {
@@ -42,6 +43,10 @@ namespace faisca {
                     const void *barrier;
                 } *responseBinding;
             } windowSurfaceCreateInfo;
+            struct {
+                void *out;
+                const void *barrier;
+            } *queryResponseBinding;
         };
     };
 
@@ -59,6 +64,11 @@ namespace faisca {
             } vk_instance_required_ext;
             void *responseNotifyBinding;
         };
+    };
+
+    struct Extent2D {
+        uint32_t width;
+        uint32_t height;
     };
 
     typedef void* WindowInstance;
