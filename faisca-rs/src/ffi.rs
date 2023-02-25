@@ -30,22 +30,76 @@ pub enum Fullscreen {
     BorderlessWindow = 2,
 }
 
+#[repr(C)]
+pub struct ResponseBinding {
+    out: *mut std::ffi::c_void,
+    wait_flag: *mut (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
 #[repr(C, u32)]
 pub enum AppMessage {
     SetWindowSize { width: u32, height: u32 } = 1,
     SetFullscreen(Fullscreen),
     SetBorderless(bool),
     SetWindowTitle(SafeCString),
+    CreateVulkanSurface {
+        instance: u64,
+        out_binding: *mut ResponseBinding,
+    },
 }
 
 #[repr(C, u32)]
 pub enum WindowMessage {
+    /// This message is only sent once at the beggining of the process execution.
+    /// It contains the required instance extensions to be used by the Vulkan driver
+    /// initialization.
     VulkanRequiredInstanceExtensions {
+        /// A pointer representing a list of C strings, the strings are null terminated.
         names: *const *const i8,
+        /// The number of C strings on the `names` list.
         count: usize,
+    } = 1,
+    ResponseNotify {
+        binding_address: *const ResponseBinding,
     },
 }
 
+impl ResponseBinding {
+    pub fn new(out: *mut std::ffi::c_void) -> Self {
+        let wait_flag = Box::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        Self {
+            wait_flag: Box::leak(wait_flag),
+            out,
+        }
+    }
+
+    pub fn wait_flag(&self) -> &(std::sync::Mutex<bool>, std::sync::Condvar) {
+        unsafe { &*(self.wait_flag) }
+    }
+
+    pub fn wait(&self) {
+        let (ready_mutex, ready_condvar) = self.wait_flag();
+        let mut ready_guard = ready_mutex.lock().unwrap();
+        while !*ready_guard {
+            ready_guard = ready_condvar.wait(ready_guard).unwrap();
+        }
+    }
+
+    pub fn notify(&self) {
+        let (ready_mutex, ready_condvar) = self.wait_flag();
+        let mut ready_guard = ready_mutex.lock().unwrap();
+        *ready_guard = true;
+        ready_condvar.notify_all();
+    }
+}
+impl Drop for ResponseBinding {
+    fn drop(&mut self) {
+        let condvar = unsafe { Box::from_raw(self.wait_flag) };
+        drop(condvar);
+    }
+}
+
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct WindowInstance(usize);
 

@@ -17,11 +17,12 @@ namespace faisca {
         FULLSCREEN_DESKTOP = 2,
     };
 
-    enum RendererMessageType {
-        SET_WINDOW_SIZE = 1,
-        SET_FULLSCREEN,
-        SET_BORDERLESS,
-        SET_WINDOW_TITLE,
+    enum AppMessageType {
+        APPMSG_SET_WINDOW_SIZE = 1,
+        APPMSG_SET_FULLSCREEN,
+        APPMSG_SET_BORDERLESS,
+        APPMSG_SET_WINDOW_TITLE,
+        APPMSG_CREATE_VULKAN_SURFACE,
     };
 
     struct AppMessage {
@@ -34,11 +35,19 @@ namespace faisca {
             uint8_t fullscreen;
             uint8_t borderless;
             const char *windowTitle;
+            struct {
+                uint64_t instance_handle;
+                struct {
+                    void *out;
+                    const void *barrier;
+                } *responseBinding;
+            } windowSurfaceCreateInfo;
         };
     };
 
-    enum AppMessageType {
-        VULKAN_INSTANCE_REQUIRED_EXTENSIONS = 1,
+    enum WindowMessageType {
+        WINMSG_VULKAN_INSTANCE_REQUIRED_EXTENSIONS = 1,
+        WINMSG_RESPONSE_NOTIFY,
     };
 
     struct WindowMessage {
@@ -48,6 +57,7 @@ namespace faisca {
                 const char *const *names;
                 size_t count;
             } vk_instance_required_ext;
+            void *responseNotifyBinding;
         };
     };
 
