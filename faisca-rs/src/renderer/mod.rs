@@ -29,6 +29,12 @@ pub enum RendererError {
     FailedToCreateSwapchain(vk::Result),
     #[error("Failed to create Vulkan image view, Vulkan error code: {0}")]
     FailedToCreateImageView(vk::Result),
+    #[error("Failed to create Vulkan shader module, Vulkan error code: {0}")]
+    FailedToCreateShaderModule(vk::Result),
+    #[error("Failed to create Vulkan pipeline layout, Vulkan error code: {0}")]
+    FailedToCreatePipelineLayout(vk::Result),
+    #[error("Failed to create Vulkan render pass, Vulkan error code: {0}")]
+    FailedToCreateRenderPass(vk::Result),
 }
 
 mod queue;
@@ -655,6 +661,220 @@ impl Renderer {
         }
         .map(|swapchain| (swapchain, surface_format, selected_extent))
         .map_err(RendererError::FailedToCreateSwapchain)
+    }
+
+    fn create_render_pass(device: &ash::Device, img_format: vk::Format) -> Result<vk::RenderPass, RendererError> {
+        // This structrue defines what we do with the images we receive to
+        // render into.
+        let color_attachment = vk::AttachmentDescription {
+            format: img_format,
+
+            samples: vk::SampleCountFlags::TYPE_1,
+
+            // When we get a new image to render, we clear it
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            // But we save the things we render into it.
+            store_op: vk::AttachmentStoreOp::STORE,
+
+            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+
+            // We don't care about the format the image has when we get it
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            // But we want it to be ready for presenting when we render it
+            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+
+            ..Default::default()
+        };
+
+        // These attachments will sort of bind to our shaders if I understand
+        // correctly, inside the pipeline. Our fragment shader outputs color, so
+        // we choose a COLOR_ATTACHMENT_OPTIMAL layout.
+        let color_attachment_ref = vk::AttachmentReference {
+            attachment: 0,
+            // Our attachment is for color, so we choose it as the optimal
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        let subpass = vk::SubpassDescription {
+            pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
+            color_attachment_count: 1,
+            // The index of the attachment on this *ARRAY* is equivalent to the
+            // index in the `layout(location = X) out vec4 outColor` that the
+            // fragment shader uses.
+            p_color_attachments: &color_attachment_ref as *const vk::AttachmentReference,
+            ..Default::default()
+        };
+
+        let render_pass_info = vk::RenderPassCreateInfo {
+            attachment_count: 1,
+            p_attachments: &color_attachment as *const vk::AttachmentDescription,
+            subpass_count: 1,
+            p_subpasses: &subpass as *const vk::SubpassDescription,
+            ..Default::default()
+        };
+
+        unsafe { device.create_render_pass(&render_pass_info, None) }
+            .map_err(RendererError::FailedToCreateRenderPass)
+    }
+
+    fn create_graphics_pipeline(
+        device: &ash::Device,
+        viewport_extent: vk::Extent2D,
+    ) -> Result<(), RendererError> {
+        // We put the shaders into u32 vecs to make sure we satisfy alignment
+        // requirements.
+        let vertex_shader_code = include_bytes!("spir_v/example_vertex_shader.spv")
+            .chunks_exact(4)
+            .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<u32>>();
+        let fragment_shader_code = include_bytes!("spir_v/example_fragment_shader.spv")
+            .chunks_exact(4)
+            .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<u32>>();
+
+        let vertex_shader_module = OnDropDefer::new(
+            Self::create_shader_module(device, &vertex_shader_code)?,
+            |smodule| {
+                log::debug!("Defered shader module destroy called");
+                unsafe { device.destroy_shader_module(smodule, None) };
+            }
+        );
+        let fragment_shader_module = OnDropDefer::new(
+            Self::create_shader_module(device, &fragment_shader_code)?,
+            |smodule| {
+                log::debug!("Defered shader module destroy called");
+                unsafe { device.destroy_shader_module(smodule, None) };
+            }
+        );
+
+        const MAIN_ARR: &'static [u8] = b"main\0";
+        const MAIN_CSTR: *const i8 = MAIN_ARR as *const [u8] as *const i8;
+
+        let vertex_shader_stage_info = vk::PipelineShaderStageCreateInfo {
+            stage: vk::ShaderStageFlags::VERTEX,
+            module: *vertex_shader_module.as_ref(),
+            p_name: MAIN_CSTR,
+            ..Default::default()
+        };
+        let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo {
+            stage: vk::ShaderStageFlags::FRAGMENT,
+            module: *fragment_shader_module.as_ref(),
+            p_name: MAIN_CSTR,
+            ..Default::default()
+        };
+
+        let shader_stage_create_info = [vertex_shader_stage_info, fragment_shader_stage_info];
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+
+        // All 0 because for now there is no input
+        let vertex_input_stage_info = vk::PipelineVertexInputStateCreateInfo {
+            ..Default::default()
+        };
+
+        let input_assembly_stage_info = vk::PipelineInputAssemblyStateCreateInfo {
+            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+            ..Default::default()
+        };
+
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: viewport_extent.width as f32,
+            height: viewport_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0},
+            extent: viewport_extent,
+        };
+
+        let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
+            dynamic_state_count: dynamic_states.len().try_into().unwrap(),
+            p_dynamic_states: dynamic_states.as_ptr(),
+            ..Default::default()
+        };
+
+        let viewport_state_info = vk::PipelineViewportStateCreateInfo {
+            viewport_count: 1,
+            p_viewports: &viewport,
+            scissor_count: 1,
+            p_scissors: &scissor,
+            ..Default::default()
+        };
+
+        let rasterization_state_info = vk::PipelineRasterizationStateCreateInfo {
+            depth_clamp_enable: vk::FALSE,
+            rasterizer_discard_enable: vk::FALSE,
+
+            polygon_mode: vk::PolygonMode::FILL,
+            line_width: 1.0,
+
+            cull_mode: vk::CullModeFlags::BACK,
+            front_face: vk::FrontFace::CLOCKWISE,
+
+            depth_bias_enable: vk::FALSE,
+            ..Default::default()
+        };
+
+        log::debug!("VkPipelineRasterizationStateCreateInfo: {rasterization_state_info:#?}");
+
+        let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
+            rasterization_samples: vk::SampleCountFlags::TYPE_1,
+            ..Default::default()
+        };
+
+        let color_blend = vk::PipelineColorBlendAttachmentState {
+            color_write_mask: vk::ColorComponentFlags::RGBA,
+            blend_enable: vk::TRUE,
+            src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            color_blend_op: vk::BlendOp::ADD,
+            src_alpha_blend_factor: vk::BlendFactor::ONE,
+            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+            alpha_blend_op: vk::BlendOp::ADD,
+        };
+
+        log::debug!("VkPipelineColorBlendAttachmentState: {color_blend:#?}");
+
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
+            attachment_count: 1,
+            p_attachments: &color_blend as *const vk::PipelineColorBlendAttachmentState,
+            ..Default::default()
+        };
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            ..Default::default()
+        };
+
+        let pipeline_layout = OnDropDefer::new(
+            unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
+                .map_err(RendererError::FailedToCreatePipelineLayout)?,
+            |p_layout| {
+                log::debug!("Defered destroy pipeline layout called");
+                unsafe { device.destroy_pipeline_layout(p_layout, None) };
+            },
+        );
+
+        Ok(())
+    }
+
+    fn create_shader_module(
+        device: &ash::Device,
+        code: &[u32],
+    ) -> Result<vk::ShaderModule, RendererError> {
+        let module_create_info = vk::ShaderModuleCreateInfo {
+            // Size is given in bytes, so we multiply the length by 4
+            code_size: code.len().checked_mul(4).unwrap().try_into().unwrap(),
+            p_code: code.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe { device.create_shader_module(&module_create_info, None) }
+            .map_err(RendererError::FailedToCreateShaderModule)
     }
 }
 
