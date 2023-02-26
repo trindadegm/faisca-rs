@@ -35,6 +35,8 @@ pub enum RendererError {
     FailedToCreatePipelineLayout(vk::Result),
     #[error("Failed to create Vulkan render pass, Vulkan error code: {0}")]
     FailedToCreateRenderPass(vk::Result),
+    #[error("Failed to create Vulkan graphics pipeline, Vulkan error code: {0}")]
+    FailedToCreateGraphicsPipeline(vk::Result),
 }
 
 mod queue;
@@ -55,10 +57,22 @@ pub struct Renderer {
     swapchain_img_format: vk::SurfaceFormatKHR,
     swapchain_img_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
+    render_pass: vk::RenderPass,
+    pipeline_layout:  vk::PipelineLayout,
+    pipeline: vk::Pipeline,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::debug!("Destroying Vulkan pipeline");
+        unsafe { self.device.destroy_pipeline(self.pipeline, None) };
+
+        log::debug!("Destroying Vulkan pipeline layout");
+        unsafe { self.device.destroy_pipeline_layout(self.pipeline_layout, None) };
+
+        log::debug!("Destroying Vulkan render pass");
+        unsafe { self.device.destroy_render_pass(self.render_pass, None) };
+
         log::debug!("Destroying Vulkan image views");
         for &view in self.swapchain_image_views.iter() {
             unsafe { self.device.destroy_image_view(view, None) };
@@ -318,6 +332,25 @@ impl Renderer {
             },
         );
 
+        let render_pass = OnDropDefer::new(
+            Self::create_render_pass(device.as_ref(), swapchain_img_format.format)?,
+            |rpass| {
+                log::debug!("Defered render pass drop called");
+                unsafe { device.as_ref().destroy_render_pass(rpass, None) };
+            },
+        );
+        let pipeline_pack = OnDropDefer::new(
+            Self::create_graphics_pipeline(device.as_ref(), swapchain_img_extent, *render_pass.as_ref())?,
+            |(p_layout, p)| {
+                log::debug!("Defered pipeline drop called");
+                unsafe { device.as_ref().destroy_pipeline(p, None) };
+                log::debug!("Defered pipeline layout drop called");
+                unsafe { device.as_ref().destroy_pipeline_layout(p_layout, None) };
+            },
+        );
+
+        let (pipeline_layout, pipeline) = pipeline_pack.take();
+        let render_pass = render_pass.take();
         let swapchain_image_views = swapchain_image_views.take();
         let swapchain = swapchain.take();
         let device = device.take();
@@ -340,6 +373,9 @@ impl Renderer {
             swapchain_img_format,
             swapchain_img_extent,
             swapchain_image_views,
+            render_pass,
+            pipeline_layout,
+            pipeline,
         })
     }
 
@@ -721,7 +757,8 @@ impl Renderer {
     fn create_graphics_pipeline(
         device: &ash::Device,
         viewport_extent: vk::Extent2D,
-    ) -> Result<(), RendererError> {
+        render_pass: vk::RenderPass,
+    ) -> Result<(vk::PipelineLayout, vk::Pipeline), RendererError> {
         // We put the shaders into u32 vecs to make sure we satisfy alignment
         // requirements.
         let vertex_shader_code = include_bytes!("spir_v/example_vertex_shader.spv")
@@ -764,7 +801,7 @@ impl Renderer {
             ..Default::default()
         };
 
-        let shader_stage_create_info = [vertex_shader_stage_info, fragment_shader_stage_info];
+        let shader_stages = [vertex_shader_stage_info, fragment_shader_stage_info];
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
@@ -859,7 +896,32 @@ impl Renderer {
             },
         );
 
-        Ok(())
+        let pipeline_info = vk::GraphicsPipelineCreateInfo {
+            stage_count: 2,
+            p_stages: shader_stages.as_ptr(),
+            p_vertex_input_state: &vertex_input_stage_info as *const _,
+            p_input_assembly_state: &input_assembly_stage_info as *const _,
+            p_viewport_state: &viewport_state_info as *const _,
+            p_rasterization_state: &rasterization_state_info as *const _,
+            p_multisample_state: &multisample_state_info as *const _,
+            p_depth_stencil_state: std::ptr::null(),
+            p_color_blend_state: &color_blend_state as *const _,
+            p_dynamic_state: &dynamic_state_info as *const _,
+            layout: *pipeline_layout.as_ref(),
+            render_pass,
+            subpass: 0,
+            ..Default::default()
+        };
+
+        let pipeline = *unsafe {
+            device.create_graphics_pipelines(
+                vk::PipelineCache::null(), &[pipeline_info], None,
+            )
+        }
+        .map_err(|e| RendererError::FailedToCreateGraphicsPipeline(e.1))?
+        .first().unwrap();
+
+        Ok((pipeline_layout.take(), pipeline))
     }
 
     fn create_shader_module(
