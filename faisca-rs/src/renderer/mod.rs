@@ -45,6 +45,10 @@ pub enum RendererError {
     FailedToCreateCommandBuffer(vk::Result),
     #[error("An error occurred while recording commands, Vulkan error code: {0}")]
     CommandBufferRecordingError(vk::Result),
+    #[error("Failed to create Vulkan sync object, Vulkan error code: {0}")]
+    FailedToCreateSyncObject(vk::Result),
+    #[error("Failed to draw Vulkan frame, Vulkan error code: {0}")]
+    FailedToDrawFrame(vk::Result),
 }
 
 mod queue;
@@ -71,10 +75,28 @@ pub struct Renderer {
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     primary_command_buffer: vk::CommandBuffer,
+    img_available_sem: vk::Semaphore,
+    render_finished_sem: vk::Semaphore,
+    in_flight_fence: vk::Fence,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        unsafe { self.device.device_wait_idle() }
+            .unwrap_or_else(|e| {
+                log::error!("FATAL: Could not wait for device idle on Renderer destroying: {e}");
+                std::process::abort();
+            });
+
+        log::debug!("Destroying Vulkan image available semaphore");
+        unsafe { self.device.destroy_semaphore(self.img_available_sem, None) };
+
+        log::debug!("Destroying Vulkan render finished semaphore");
+        unsafe { self.device.destroy_semaphore(self.render_finished_sem, None) };
+
+        log::debug!("Destroying Vulkan in flight fence");
+        unsafe { self.device.destroy_fence(self.in_flight_fence, None) };
+
         log::debug!("Destroying Vulkan command pool");
         unsafe { self.device.destroy_command_pool(self.command_pool, None) };
 
@@ -252,14 +274,12 @@ impl Renderer {
         );
 
         let selected_physical_device = Self::select_physical_device(
-            &entry,
             instance.as_ref(),
             &surface_loader,
             *surface.as_ref(),
         )?;
 
         let queue_indices = queue::QueueFamilyIndices::fetch(
-            &entry,
             instance.as_ref(),
             &surface_loader,
             *surface.as_ref(),
@@ -430,6 +450,43 @@ impl Renderer {
         .first()
         .unwrap();
 
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let fence_info = vk::FenceCreateInfo {
+            flags: vk::FenceCreateFlags::SIGNALED,
+            ..Default::default()
+        };
+
+        let img_available_semaphore = OnDropDefer::new(unsafe {
+                device.as_ref().create_semaphore(&semaphore_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?
+            },
+            |sem| {
+                log::debug!("Defered destroy semaphore called");
+                unsafe { device.as_ref().destroy_semaphore(sem, None) };
+            },
+        );
+        let render_finished_semaphore = OnDropDefer::new(unsafe {
+                device.as_ref().create_semaphore(&semaphore_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?
+            },
+            |sem| {
+                log::debug!("Defered destroy semaphore called");
+                unsafe { device.as_ref().destroy_semaphore(sem, None) };
+            },
+        );
+        let in_flight_fence = OnDropDefer::new(unsafe {
+                device.as_ref().create_fence(&fence_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?
+            },
+            |fen| {
+                log::debug!("Defered destroy semaphore called");
+                unsafe { device.as_ref().destroy_fence(fen, None) };
+            },
+        );
+
+        let img_available_sem = img_available_semaphore.take();
+        let render_finished_sem = render_finished_semaphore.take();
+        let in_flight_fence = in_flight_fence.take();
         let command_pool = command_pool.take();
         let framebuffers = framebuffers.take();
         let (pipeline_layout, pipeline) = pipeline_pack.take();
@@ -462,6 +519,9 @@ impl Renderer {
             framebuffers,
             command_pool,
             primary_command_buffer,
+            img_available_sem,
+            render_finished_sem,
+            in_flight_fence,
         })
     }
 
@@ -562,7 +622,6 @@ impl Renderer {
     /// Picks the first device it finds that supports the operations we want to
     /// do (the first suitable device).
     fn select_physical_device(
-        entry: &ash::Entry,
         instance: &ash::Instance,
         surface_loader: &khr::Surface,
         surface: vk::SurfaceKHR,
@@ -578,7 +637,6 @@ impl Renderer {
                 .cloned()
                 .find(|&d| {
                     let family_indices = queue::QueueFamilyIndices::fetch(
-                        entry,
                         instance,
                         surface_loader,
                         surface,
@@ -819,6 +877,16 @@ impl Renderer {
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         };
 
+        let dependency = vk::SubpassDependency {
+            src_subpass: vk::SUBPASS_EXTERNAL,
+            dst_subpass: 0,
+            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            src_access_mask: vk::AccessFlags::empty(),
+            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            ..Default::default()
+        };
+
         let subpass = vk::SubpassDescription {
             pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
             color_attachment_count: 1,
@@ -834,6 +902,8 @@ impl Renderer {
             p_attachments: &color_attachment as *const vk::AttachmentDescription,
             subpass_count: 1,
             p_subpasses: &subpass as *const vk::SubpassDescription,
+            dependency_count: 1,
+            p_dependencies: &dependency as *const vk::SubpassDependency,
             ..Default::default()
         };
 
@@ -1081,7 +1151,7 @@ impl Renderer {
             clear_value_count: 1,
             p_clear_values: &vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.2, 0.2, 0.2, 1.0],
+                    float32: [0.0, 0.0, 0.0, 1.0],
                 },
             } as *const _,
             ..Default::default()
@@ -1119,6 +1189,69 @@ impl Renderer {
                 .end_command_buffer(cmdbuf)
                 .map_err(RendererError::CommandBufferRecordingError)
         }
+    }
+
+    pub fn draw_frame(&mut self) -> Result<(), RendererError> {
+        let img_idx = unsafe {
+            self.device.wait_for_fences(&[self.in_flight_fence], false, u64::MAX)
+                .map_err(RendererError::FailedToDrawFrame)?;
+            self.device.reset_fences(&[self.in_flight_fence])
+                .map_err(RendererError::FailedToDrawFrame)?;
+
+            let (img_idx, _swapchain_suboptimal) = self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                u64::MAX,
+                self.img_available_sem,
+                vk::Fence::null(),
+            )
+            .map_err(RendererError::FailedToDrawFrame)?;
+
+            self.device.reset_command_buffer(
+                self.primary_command_buffer,
+                vk::CommandBufferResetFlags::empty(),
+            )
+            .map_err(RendererError::FailedToDrawFrame)?;
+
+            img_idx
+        };
+
+        self.record_command_buffer(self.primary_command_buffer, img_idx.try_into().unwrap())?;
+
+        let wait_semaphores = [self.img_available_sem];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = [self.render_finished_sem];
+        let command_buffers = [self.primary_command_buffer];
+        let submit_info = vk::SubmitInfo {
+            wait_semaphore_count: 1,
+            p_wait_semaphores: wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: wait_stages.as_ptr(),
+            command_buffer_count: 1,
+            p_command_buffers: command_buffers.as_ptr(),
+            signal_semaphore_count: 1,
+            p_signal_semaphores: signal_semaphores.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.queue_submit(self.graphics_queue, &[submit_info], self.in_flight_fence)
+                .map_err(RendererError::FailedToDrawFrame)?;
+
+            let swapchains = [self.swapchain];
+
+            let present_info = vk::PresentInfoKHR {
+                wait_semaphore_count: 1,
+                p_wait_semaphores: signal_semaphores.as_ptr(),
+                swapchain_count: 1,
+                p_swapchains: swapchains.as_ptr(),
+                p_image_indices: &img_idx as *const u32,
+                ..Default::default()
+            };
+
+            self.swapchain_loader.queue_present(self.present_queue, &present_info)
+                .map_err(RendererError::FailedToDrawFrame)?;
+        }
+
+        Ok(())
     }
 }
 

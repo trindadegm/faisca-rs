@@ -8,7 +8,6 @@ pub struct QueueFamilyIndices {
 
 impl QueueFamilyIndices {
     pub fn fetch(
-        entry: &ash::Entry,
         instance: &ash::Instance,
         surface_loader: &khr::Surface,
         surface: vk::SurfaceKHR,
