@@ -43,6 +43,8 @@ pub enum RendererError {
     FailedToCreateCommandPool(vk::Result),
     #[error("Failed to create Vulkan command buffer, Vulkan error code: {0}")]
     FailedToCreateCommandBuffer(vk::Result),
+    #[error("An error occurred while recording commands, Vulkan error code: {0}")]
+    CommandBufferRecordingError(vk::Result),
 }
 
 mod queue;
@@ -380,7 +382,12 @@ impl Renderer {
         );
 
         let framebuffers = OnDropDefer::new(
-            Self::create_framebuffers(device.as_ref(), render_pass.as_ref(), swapchain_img_extent, swapchain_image_views.as_ref())?,
+            Self::create_framebuffers(
+                device.as_ref(),
+                render_pass.as_ref(),
+                swapchain_img_extent,
+                swapchain_image_views.as_ref(),
+            )?,
             |fbuffers| {
                 for fbuf in fbuffers {
                     unsafe { device.as_ref().destroy_framebuffer(fbuf, None) };
@@ -388,14 +395,19 @@ impl Renderer {
             },
         );
 
-        let command_pool = OnDropDefer::new({
+        let command_pool = OnDropDefer::new(
+            {
                 let command_pool_info = vk::CommandPoolCreateInfo {
                     flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
                     queue_family_index: queue_indices.graphics_family.unwrap(),
                     ..Default::default()
                 };
-                unsafe { device.as_ref().create_command_pool(&command_pool_info, None) }
-                    .map_err(RendererError::FailedToCreateCommandPool)
+                unsafe {
+                    device
+                        .as_ref()
+                        .create_command_pool(&command_pool_info, None)
+                }
+                .map_err(RendererError::FailedToCreateCommandPool)
             }?,
             |cpool| {
                 log::debug!("Defered destroy command pool called");
@@ -410,10 +422,13 @@ impl Renderer {
             ..Default::default()
         };
         let primary_command_buffer = *unsafe {
-            device.as_ref().allocate_command_buffers(&command_buffer_info)
+            device
+                .as_ref()
+                .allocate_command_buffers(&command_buffer_info)
         }
         .map_err(RendererError::FailedToCreateCommandBuffer)?
-        .first().unwrap();
+        .first()
+        .unwrap();
 
         let command_pool = command_pool.take();
         let framebuffers = framebuffers.take();
@@ -1028,18 +1043,73 @@ impl Renderer {
                 ..Default::default()
             };
 
-            let framebuffer = unsafe {
-                device.create_framebuffer(&framebuffer_info, None)
-            }.map_err(|e| {
-                for &fbuf in &result {
-                    unsafe { device.destroy_framebuffer(fbuf, None) };
-                }
-                RendererError::FailedToCreateFramebuffer(e)
-            })?;
+            let framebuffer = unsafe { device.create_framebuffer(&framebuffer_info, None) }
+                .map_err(|e| {
+                    for &fbuf in &result {
+                        unsafe { device.destroy_framebuffer(fbuf, None) };
+                    }
+                    RendererError::FailedToCreateFramebuffer(e)
+                })?;
 
             result.push(framebuffer);
         }
         Ok(result)
+    }
+
+    fn record_command_buffer(&mut self, cmdbuf: vk::CommandBuffer, img_idx: usize) -> Result<(), RendererError> {
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo {
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .begin_command_buffer(cmdbuf, &command_buffer_begin_info)
+        }
+        .map_err(RendererError::CommandBufferRecordingError)?;
+
+        let render_pass_begin_info = vk::RenderPassBeginInfo {
+            render_pass: self.render_pass,
+            framebuffer: self.framebuffers[img_idx],
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_img_extent,
+            },
+            clear_value_count: 1,
+            p_clear_values: &vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.2, 0.2, 0.2, 1.0],
+                },
+            } as *const _,
+            ..Default::default()
+        };
+
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.swapchain_img_extent.width as f32,
+            height: self.swapchain_img_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: self.swapchain_img_extent,
+        };
+
+        unsafe {
+            self.device
+                .cmd_begin_render_pass(cmdbuf, &render_pass_begin_info, vk::SubpassContents::INLINE);
+            self.device.cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            self.device.cmd_set_viewport(cmdbuf, 0, &[viewport]);
+            self.device.cmd_set_scissor(cmdbuf, 0, &[scissor]);
+            self.device.cmd_draw(cmdbuf, 3, 1, 0, 0);
+
+            self.device.cmd_end_render_pass(cmdbuf);
+
+            self.device.end_command_buffer(cmdbuf)
+                .map_err(RendererError::CommandBufferRecordingError)
+        }
     }
 }
 
