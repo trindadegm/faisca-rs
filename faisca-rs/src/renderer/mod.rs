@@ -41,6 +41,8 @@ pub enum RendererError {
     FailedToCreateFramebuffer(vk::Result),
     #[error("Failed to create Vulkan command pool, Vulkan error code: {0}")]
     FailedToCreateCommandPool(vk::Result),
+    #[error("Failed to create Vulkan command buffer, Vulkan error code: {0}")]
+    FailedToCreateCommandBuffer(vk::Result),
 }
 
 mod queue;
@@ -66,6 +68,7 @@ pub struct Renderer {
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
+    primary_command_buffer: vk::CommandBuffer,
 }
 
 impl Drop for Renderer {
@@ -400,6 +403,18 @@ impl Renderer {
             },
         );
 
+        let command_buffer_info = vk::CommandBufferAllocateInfo {
+            command_pool: *command_pool.as_ref(),
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+        let primary_command_buffer = *unsafe {
+            device.as_ref().allocate_command_buffers(&command_buffer_info)
+        }
+        .map_err(RendererError::FailedToCreateCommandBuffer)?
+        .first().unwrap();
+
         let command_pool = command_pool.take();
         let framebuffers = framebuffers.take();
         let (pipeline_layout, pipeline) = pipeline_pack.take();
@@ -431,6 +446,7 @@ impl Renderer {
             pipeline,
             framebuffers,
             command_pool,
+            primary_command_buffer,
         })
     }
 
