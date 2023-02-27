@@ -39,6 +39,8 @@ pub enum RendererError {
     FailedToCreateGraphicsPipeline(vk::Result),
     #[error("Failed to create Vulkan framebuffer, Vulkan error code: {0}")]
     FailedToCreateFramebuffer(vk::Result),
+    #[error("Failed to create Vulkan command pool, Vulkan error code: {0}")]
+    FailedToCreateCommandPool(vk::Result),
 }
 
 mod queue;
@@ -62,10 +64,20 @@ pub struct Renderer {
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    framebuffers: Vec<vk::Framebuffer>,
+    command_pool: vk::CommandPool,
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        log::debug!("Destroying Vulkan command pool");
+        unsafe { self.device.destroy_command_pool(self.command_pool, None) };
+
+        log::debug!("Destroying Vulkan framebuffers");
+        for &fbuf in self.framebuffers.iter() {
+            unsafe { self.device.destroy_framebuffer(fbuf, None) };
+        }
+
         log::debug!("Destroying Vulkan pipeline");
         unsafe { self.device.destroy_pipeline(self.pipeline, None) };
 
@@ -364,6 +376,32 @@ impl Renderer {
             },
         );
 
+        let framebuffers = OnDropDefer::new(
+            Self::create_framebuffers(device.as_ref(), render_pass.as_ref(), swapchain_img_extent, swapchain_image_views.as_ref())?,
+            |fbuffers| {
+                for fbuf in fbuffers {
+                    unsafe { device.as_ref().destroy_framebuffer(fbuf, None) };
+                }
+            },
+        );
+
+        let command_pool = OnDropDefer::new({
+                let command_pool_info = vk::CommandPoolCreateInfo {
+                    flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                    queue_family_index: queue_indices.graphics_family.unwrap(),
+                    ..Default::default()
+                };
+                unsafe { device.as_ref().create_command_pool(&command_pool_info, None) }
+                    .map_err(RendererError::FailedToCreateCommandPool)
+            }?,
+            |cpool| {
+                log::debug!("Defered destroy command pool called");
+                unsafe { device.as_ref().destroy_command_pool(cpool, None) };
+            },
+        );
+
+        let command_pool = command_pool.take();
+        let framebuffers = framebuffers.take();
         let (pipeline_layout, pipeline) = pipeline_pack.take();
         let render_pass = render_pass.take();
         let swapchain_image_views = swapchain_image_views.take();
@@ -391,6 +429,8 @@ impl Renderer {
             render_pass,
             pipeline_layout,
             pipeline,
+            framebuffers,
+            command_pool,
         })
     }
 
