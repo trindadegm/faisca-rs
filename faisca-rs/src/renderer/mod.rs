@@ -37,6 +37,8 @@ pub enum RendererError {
     FailedToCreateRenderPass(vk::Result),
     #[error("Failed to create Vulkan graphics pipeline, Vulkan error code: {0}")]
     FailedToCreateGraphicsPipeline(vk::Result),
+    #[error("Failed to create Vulkan framebuffer, Vulkan error code: {0}")]
+    FailedToCreateFramebuffer(vk::Result),
 }
 
 mod queue;
@@ -302,33 +304,38 @@ impl Renderer {
                 .map_err(RendererError::VulkanInfoQueryFailed)?
         };
 
-        let swapchain_image_views: Vec<vk::ImageView> = swapchain_images
-            .iter()
-            .map(|&img| {
-                let img_view_info = vk::ImageViewCreateInfo {
-                    image: img,
-                    view_type: vk::ImageViewType::TYPE_2D,
-                    format: swapchain_img_format.format,
-                    components: vk::ComponentMapping {
-                        r: vk::ComponentSwizzle::IDENTITY,
-                        g: vk::ComponentSwizzle::IDENTITY,
-                        b: vk::ComponentSwizzle::IDENTITY,
-                        a: vk::ComponentSwizzle::IDENTITY,
-                    },
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                };
+        let mut swapchain_image_views: Vec<vk::ImageView> = Vec::new();
+        for &img in &swapchain_images {
+            let img_view_info = vk::ImageViewCreateInfo {
+                image: img,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format: swapchain_img_format.format,
+                components: vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                },
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
 
-                unsafe { device.as_ref().create_image_view(&img_view_info, None) }
-                    .map_err(RendererError::FailedToCreateImageView)
-            })
-            .collect::<Result<_, _>>()?;
+            let img_view = unsafe { device.as_ref().create_image_view(&img_view_info, None) }
+                .map_err(|err| {
+                    for &view in &swapchain_image_views {
+                        unsafe { device.as_ref().destroy_image_view(view, None) };
+                    }
+                    RendererError::FailedToCreateImageView(err)
+                })?;
+            swapchain_image_views.push(img_view);
+        }
+
         let swapchain_image_views = OnDropDefer::new(swapchain_image_views, |siv| {
             log::debug!("Defered swapchain image views drop called");
             for view in siv {
@@ -945,6 +952,38 @@ impl Renderer {
 
         unsafe { device.create_shader_module(&module_create_info, None) }
             .map_err(RendererError::FailedToCreateShaderModule)
+    }
+
+    fn create_framebuffers(
+        device: &ash::Device,
+        render_pass: &vk::RenderPass,
+        extent: vk::Extent2D,
+        img_views: &[vk::ImageView],
+    ) -> Result<Vec<vk::Framebuffer>, RendererError> {
+        let mut result = Vec::new();
+        for img_view in img_views {
+            let framebuffer_info = vk::FramebufferCreateInfo {
+                render_pass: *render_pass,
+                attachment_count: 1,
+                p_attachments: img_view as *const _,
+                width: extent.width,
+                height: extent.height,
+                layers: 1,
+                ..Default::default()
+            };
+
+            let framebuffer = unsafe {
+                device.create_framebuffer(&framebuffer_info, None)
+            }.map_err(|e| {
+                for &fbuf in &result {
+                    unsafe { device.destroy_framebuffer(fbuf, None) };
+                }
+                RendererError::FailedToCreateFramebuffer(e)
+            })?;
+
+            result.push(framebuffer);
+        }
+        Ok(result)
     }
 }
 
