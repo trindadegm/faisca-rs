@@ -58,7 +58,7 @@ pub struct Renderer {
     swapchain_img_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
-    pipeline_layout:  vk::PipelineLayout,
+    pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
 }
 
@@ -68,7 +68,10 @@ impl Drop for Renderer {
         unsafe { self.device.destroy_pipeline(self.pipeline, None) };
 
         log::debug!("Destroying Vulkan pipeline layout");
-        unsafe { self.device.destroy_pipeline_layout(self.pipeline_layout, None) };
+        unsafe {
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None)
+        };
 
         log::debug!("Destroying Vulkan render pass");
         unsafe { self.device.destroy_render_pass(self.render_pass, None) };
@@ -79,7 +82,10 @@ impl Drop for Renderer {
         }
 
         log::debug!("Destroying Vulkan swapchain");
-        unsafe { self.swapchain_loader.destroy_swapchain(self.swapchain, None) };
+        unsafe {
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None)
+        };
 
         log::debug!("Destroying Vulkan device");
         unsafe { self.device.destroy_device(None) };
@@ -291,7 +297,8 @@ impl Renderer {
         })?;
 
         let swapchain_images = unsafe {
-            swapchain_loader.get_swapchain_images(*swapchain.as_ref())
+            swapchain_loader
+                .get_swapchain_images(*swapchain.as_ref())
                 .map_err(RendererError::VulkanInfoQueryFailed)?
         };
 
@@ -322,15 +329,12 @@ impl Renderer {
                     .map_err(RendererError::FailedToCreateImageView)
             })
             .collect::<Result<_, _>>()?;
-        let swapchain_image_views = OnDropDefer::new(
-            swapchain_image_views,
-            |siv| {
-                log::debug!("Defered swapchain image views drop called");
-                for view in siv {
-                    unsafe { device.as_ref().destroy_image_view(view, None) };
-                }
-            },
-        );
+        let swapchain_image_views = OnDropDefer::new(swapchain_image_views, |siv| {
+            log::debug!("Defered swapchain image views drop called");
+            for view in siv {
+                unsafe { device.as_ref().destroy_image_view(view, None) };
+            }
+        });
 
         let render_pass = OnDropDefer::new(
             Self::create_render_pass(device.as_ref(), swapchain_img_format.format)?,
@@ -340,7 +344,11 @@ impl Renderer {
             },
         );
         let pipeline_pack = OnDropDefer::new(
-            Self::create_graphics_pipeline(device.as_ref(), swapchain_img_extent, *render_pass.as_ref())?,
+            Self::create_graphics_pipeline(
+                device.as_ref(),
+                swapchain_img_extent,
+                *render_pass.as_ref(),
+            )?,
             |(p_layout, p)| {
                 log::debug!("Defered pipeline drop called");
                 unsafe { device.as_ref().destroy_pipeline(p, None) };
@@ -692,14 +700,15 @@ impl Renderer {
             swapchain_create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
         }
 
-        unsafe {
-            swapchain_loader.create_swapchain(&swapchain_create_info, None)
-        }
-        .map(|swapchain| (swapchain, surface_format, selected_extent))
-        .map_err(RendererError::FailedToCreateSwapchain)
+        unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None) }
+            .map(|swapchain| (swapchain, surface_format, selected_extent))
+            .map_err(RendererError::FailedToCreateSwapchain)
     }
 
-    fn create_render_pass(device: &ash::Device, img_format: vk::Format) -> Result<vk::RenderPass, RendererError> {
+    fn create_render_pass(
+        device: &ash::Device,
+        img_format: vk::Format,
+    ) -> Result<vk::RenderPass, RendererError> {
         // This structrue defines what we do with the images we receive to
         // render into.
         let color_attachment = vk::AttachmentDescription {
@@ -775,14 +784,14 @@ impl Renderer {
             |smodule| {
                 log::debug!("Defered shader module destroy called");
                 unsafe { device.destroy_shader_module(smodule, None) };
-            }
+            },
         );
         let fragment_shader_module = OnDropDefer::new(
             Self::create_shader_module(device, &fragment_shader_code)?,
             |smodule| {
                 log::debug!("Defered shader module destroy called");
                 unsafe { device.destroy_shader_module(smodule, None) };
-            }
+            },
         );
 
         const MAIN_ARR: &'static [u8] = b"main\0";
@@ -825,7 +834,7 @@ impl Renderer {
         };
 
         let scissor = vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0},
+            offset: vk::Offset2D { x: 0, y: 0 },
             extent: viewport_extent,
         };
 
@@ -914,12 +923,11 @@ impl Renderer {
         };
 
         let pipeline = *unsafe {
-            device.create_graphics_pipelines(
-                vk::PipelineCache::null(), &[pipeline_info], None,
-            )
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
         }
         .map_err(|e| RendererError::FailedToCreateGraphicsPipeline(e.1))?
-        .first().unwrap();
+        .first()
+        .unwrap();
 
         Ok((pipeline_layout.take(), pipeline))
     }
