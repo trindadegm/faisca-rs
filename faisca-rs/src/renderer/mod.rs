@@ -125,7 +125,7 @@ impl Drop for Renderer {
 impl Renderer {
     pub fn new(
         window: WindowInstance,
-        messenger: WindowMessenger,
+        messenger: &WindowMessenger,
     ) -> Result<Renderer, RendererError> {
         // And it begins!
         let entry = unsafe { ash::Entry::load()? };
@@ -713,7 +713,7 @@ impl Renderer {
 
     fn create_swapchain(
         win: WindowInstance,
-        messenger: WindowMessenger,
+        messenger: &WindowMessenger,
         swapchain_info: &swapchain_info::SwapchainSupportInfo,
         surface: vk::SurfaceKHR,
         queue_families: &queue::QueueFamilyIndices,
@@ -1056,7 +1056,11 @@ impl Renderer {
         Ok(result)
     }
 
-    fn record_command_buffer(&mut self, cmdbuf: vk::CommandBuffer, img_idx: usize) -> Result<(), RendererError> {
+    fn record_command_buffer(
+        &mut self,
+        cmdbuf: vk::CommandBuffer,
+        img_idx: usize,
+    ) -> Result<(), RendererError> {
         let command_buffer_begin_info = vk::CommandBufferBeginInfo {
             ..Default::default()
         };
@@ -1098,16 +1102,21 @@ impl Renderer {
         };
 
         unsafe {
+            self.device.cmd_begin_render_pass(
+                cmdbuf,
+                &render_pass_begin_info,
+                vk::SubpassContents::INLINE,
+            );
             self.device
-                .cmd_begin_render_pass(cmdbuf, &render_pass_begin_info, vk::SubpassContents::INLINE);
-            self.device.cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                .cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             self.device.cmd_set_viewport(cmdbuf, 0, &[viewport]);
             self.device.cmd_set_scissor(cmdbuf, 0, &[scissor]);
             self.device.cmd_draw(cmdbuf, 3, 1, 0, 0);
 
             self.device.cmd_end_render_pass(cmdbuf);
 
-            self.device.end_command_buffer(cmdbuf)
+            self.device
+                .end_command_buffer(cmdbuf)
                 .map_err(RendererError::CommandBufferRecordingError)
         }
     }

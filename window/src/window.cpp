@@ -90,15 +90,26 @@ int main(int argc, char *argv[]) {
 
     std::thread appFnThread(runApp, mainWindow, FaiscaMessageWindow);
 
+    void *backChannel= nullptr;
+
     SDL_Event e;
     bool running = true;
     while (running) {
         int res = SDL_WaitEvent(&e);
         if (res) {
             switch (e.type) {
-                case SDL_QUIT:
+                case SDL_QUIT: {
                     running = false;
-                    break;
+                    WindowEvent windowEvent = WindowEvent {};
+                    windowEvent.type = WINEVT_QUIT;
+
+                    WindowMessage windowMessage {};
+                    windowMessage.type = WINMSG_WINDOW_EVENT;
+                    windowMessage.windowEvent.msgBackchannel = backChannel;
+                    windowMessage.windowEvent.windowEvent = &windowEvent;
+
+                    messageApp(mainWindow, &windowMessage);
+                } break;
                 case SDL_USEREVENT: {
                     const AppMessage *msg = static_cast<const AppMessage*>(e.user.data1);
                     SDL_Window *msgWindow = static_cast<SDL_Window*>(e.user.data2);
@@ -146,6 +157,9 @@ int main(int argc, char *argv[]) {
                             message.responseNotifyBinding = msg->queryResponseBinding;
                             messageApp(msgWindow, &message);
                         } break;
+                        case APPMSG_SET_MSG_BACKCHANNEL:
+                            backChannel = msg->msgBackchannel;
+                            break;
                         default:
                             break;
                     }

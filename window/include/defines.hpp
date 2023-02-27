@@ -24,6 +24,7 @@ namespace faisca {
         APPMSG_SET_WINDOW_TITLE,
         APPMSG_CREATE_VULKAN_SURFACE,
         APPMSG_QUERY_VIEWPORT_EXTENT,
+        APPMSG_SET_MSG_BACKCHANNEL,
     };
 
     struct AppMessage {
@@ -47,12 +48,25 @@ namespace faisca {
                 void *out;
                 const void *barrier;
             } *queryResponseBinding;
+            void *msgBackchannel;
+        };
+    };
+
+    enum WindowEventType {
+        WINEVT_QUIT = 1,
+    };
+
+    struct WindowEvent {
+        uint32_t type;
+        union {
+            uint32_t keyDown;
         };
     };
 
     enum WindowMessageType {
         WINMSG_VULKAN_INSTANCE_REQUIRED_EXTENSIONS = 1,
         WINMSG_RESPONSE_NOTIFY,
+        WINMSG_WINDOW_EVENT,
     };
 
     struct WindowMessage {
@@ -63,6 +77,10 @@ namespace faisca {
                 size_t count;
             } vk_instance_required_ext;
             void *responseNotifyBinding;
+            struct {
+                void *msgBackchannel;
+                const WindowEvent *windowEvent;
+            } windowEvent;
         };
     };
 

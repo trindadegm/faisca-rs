@@ -33,7 +33,7 @@ pub enum Fullscreen {
 #[repr(C)]
 pub struct ResponseBinding {
     out: *mut std::ffi::c_void,
-    wait_flag: *mut (std::sync::Mutex<bool>, std::sync::Condvar),
+    wait_flag: *mut std::ffi::c_void, //(std::sync::Mutex<bool>, std::sync::Condvar),
 }
 
 #[repr(C, u32)]
@@ -54,6 +54,9 @@ pub enum AppMessage {
     QueryViewportExtents {
         out_binding: *const ResponseBinding,
     },
+    SetMsgBackchannel {
+        channel: *const std::ffi::c_void,
+    },
 }
 
 #[repr(C, u32)]
@@ -70,6 +73,17 @@ pub enum WindowMessage {
     ResponseNotify {
         binding_address: *const ResponseBinding,
     },
+    WindowEvent {
+        channel: *mut std::ffi::c_void,
+        event: *const WindowEvent,
+    },
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, u32)]
+pub enum WindowEvent {
+    Quit = 1,
+    KeyDown { c: u32 },
 }
 
 #[repr(C)]
@@ -82,13 +96,13 @@ impl ResponseBinding {
     pub unsafe fn new(out: *mut std::ffi::c_void) -> Self {
         let wait_flag = Box::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         Self {
-            wait_flag: Box::leak(wait_flag),
+            wait_flag: Box::into_raw(wait_flag) as *mut std::ffi::c_void,
             out,
         }
     }
 
     pub fn wait_flag(&self) -> &(std::sync::Mutex<bool>, std::sync::Condvar) {
-        unsafe { &*(self.wait_flag) }
+        unsafe { &*(self.wait_flag as *mut (std::sync::Mutex<bool>, std::sync::Condvar)) }
     }
 
     pub fn reset(&self) {
@@ -122,5 +136,12 @@ impl Drop for ResponseBinding {
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct WindowInstance(usize);
+
+impl WindowInstance {
+    #[inline(always)]
+    pub unsafe fn null() -> Self {
+        Self(0)
+    }
+}
 
 pub type MessageWindowFn = unsafe extern "C" fn(WindowInstance, *const AppMessage) -> u32;
