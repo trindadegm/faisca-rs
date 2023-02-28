@@ -52,6 +52,7 @@ pub enum RendererError {
 }
 
 mod queue;
+mod resources;
 mod swapchain_info;
 
 pub struct Renderer {
