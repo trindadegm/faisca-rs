@@ -5,6 +5,8 @@ use ash::{
 };
 use std::{ffi::CStr, mem::MaybeUninit};
 
+use self::resources::RendererResourceKeeper;
+
 #[derive(thiserror::Error, Debug)]
 pub enum RendererError {
     #[error("Failed to load Video Driver: {0}")]
@@ -23,6 +25,8 @@ pub enum RendererError {
     UnavailableValidationLayers(Box<[*const i8]>),
     #[error("Failed to find a video adapter (GPU) supporting Vulkan")]
     NoAvailableVideoAdapter,
+    #[error("Failed to find a video adapter (GPU) that this application supports")]
+    NoSupportedVideoAdapter,
     #[error("Failed to create Vulkan device, Vulkan error code: {0}")]
     FailedToCreateDevice(vk::Result),
     #[error("Failed to create Vulkan swapchain, Vulkan error code: {0}")]
@@ -55,96 +59,20 @@ mod queue;
 mod resources;
 mod swapchain_info;
 
+const MAX_CONCURRENT_FRAMES: usize = 2;
+
 pub struct Renderer {
+    vk_res: RendererResourceKeeper,
     entry: ash::Entry,
-    instance: ash::Instance,
-    debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
-    surface_loader: khr::Surface,
-    surface: vk::SurfaceKHR,
-    device: ash::Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
-    swapchain_loader: khr::Swapchain,
-    swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
     swapchain_img_format: vk::SurfaceFormatKHR,
     swapchain_img_extent: vk::Extent2D,
-    swapchain_image_views: Vec<vk::ImageView>,
-    render_pass: vk::RenderPass,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    framebuffers: Vec<vk::Framebuffer>,
-    command_pool: vk::CommandPool,
-    primary_command_buffer: vk::CommandBuffer,
-    img_available_sem: vk::Semaphore,
-    render_finished_sem: vk::Semaphore,
-    in_flight_fence: vk::Fence,
+    command_buffers: Vec<vk::CommandBuffer>,
+    current_frame: usize,
 }
 
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        unsafe { self.device.device_wait_idle() }
-            .unwrap_or_else(|e| {
-                log::error!("FATAL: Could not wait for device idle on Renderer destroying: {e}");
-                std::process::abort();
-            });
-
-        log::debug!("Destroying Vulkan image available semaphore");
-        unsafe { self.device.destroy_semaphore(self.img_available_sem, None) };
-
-        log::debug!("Destroying Vulkan render finished semaphore");
-        unsafe { self.device.destroy_semaphore(self.render_finished_sem, None) };
-
-        log::debug!("Destroying Vulkan in flight fence");
-        unsafe { self.device.destroy_fence(self.in_flight_fence, None) };
-
-        log::debug!("Destroying Vulkan command pool");
-        unsafe { self.device.destroy_command_pool(self.command_pool, None) };
-
-        log::debug!("Destroying Vulkan framebuffers");
-        for &fbuf in self.framebuffers.iter() {
-            unsafe { self.device.destroy_framebuffer(fbuf, None) };
-        }
-
-        log::debug!("Destroying Vulkan pipeline");
-        unsafe { self.device.destroy_pipeline(self.pipeline, None) };
-
-        log::debug!("Destroying Vulkan pipeline layout");
-        unsafe {
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None)
-        };
-
-        log::debug!("Destroying Vulkan render pass");
-        unsafe { self.device.destroy_render_pass(self.render_pass, None) };
-
-        log::debug!("Destroying Vulkan image views");
-        for &view in self.swapchain_image_views.iter() {
-            unsafe { self.device.destroy_image_view(view, None) };
-        }
-
-        log::debug!("Destroying Vulkan swapchain");
-        unsafe {
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None)
-        };
-
-        log::debug!("Destroying Vulkan device");
-        unsafe { self.device.destroy_device(None) };
-
-        log::debug!("Destroying Vulkan surface");
-        unsafe { self.surface_loader.destroy_surface(self.surface, None) };
-
-        if let Some(debug_messenger) = self.debug_messenger {
-            log::debug!("Destroying Vulkan debug utils");
-            let debug_utils = ext::DebugUtils::new(&self.entry, &self.instance);
-            unsafe { debug_utils.destroy_debug_utils_messenger(debug_messenger, None) };
-        }
-
-        log::debug!("Destroying Vulkan instance");
-        unsafe { self.instance.destroy_instance(None) };
-    }
-}
 impl Renderer {
     pub fn new(
         window: WindowInstance,
@@ -152,6 +80,8 @@ impl Renderer {
     ) -> Result<Renderer, RendererError> {
         // And it begins!
         let entry = unsafe { ash::Entry::load()? };
+
+        let mut vk_res = RendererResourceKeeper::new();
 
         let app_info = vk::ApplicationInfo {
             p_application_name: b"Faisca App\0" as *const u8 as *const i8,
@@ -219,40 +149,33 @@ impl Renderer {
 
         log::debug!("VkInstanceCreateInfo: {instance_info:#?}");
 
-        let instance = unsafe { entry.create_instance(&instance_info, None) }
-            .map_err(RendererError::FailedToCreateInstance)?;
-
-        // I'll use this ~beautiful~ `OnDropDefer` thingie to make sure we
-        // destroy the things we create even in case we return earlier or panic.
-        let instance = OnDropDefer::new(instance, |i| {
-            log::debug!("Defered instance destroy called");
-            unsafe { i.destroy_instance(None) };
-        });
+        unsafe { *vk_res.instance_mut() = Some(
+            entry.create_instance(&instance_info, None)
+                .map_err(RendererError::FailedToCreateInstance)?
+        )};
 
         log::debug!("Vulkan Instance created");
 
-        let surface_loader = khr::Surface::new(&entry, instance.as_ref());
+        unsafe {
+            *vk_res.surface_loader_mut() = Some(khr::Surface::new(&entry, vk_res.instance()));
+            *vk_res.debug_loader_mut() = Some(ext::DebugUtils::new(&entry, vk_res.instance()));
+        };
 
         // In debug mode, we make a debug messenger, that will give us feedback,
         // specially about all that validation thing we talked about earlier.
         // This is how the driver tells us a bit about what it is doing on its
         // end, and gives feedback about how badly we're working on our end.
         let debug_messenger = if crate::DEBUG_ENABLED {
-            let debug_utils = ext::DebugUtils::new(&entry, instance.as_ref());
             let messenger =
-                unsafe { debug_utils.create_debug_utils_messenger(&debug_messenger_info, None) }
+                unsafe { vk_res.debug_loader().create_debug_utils_messenger(&debug_messenger_info, None) }
                     .map_err(RendererError::FailedToCreateDebugMessenger)?;
 
-            let messenger = OnDropDefer::new(messenger, |m| {
-                log::debug!("Defered debug messenger destroy called");
-                let debug_utils = ext::DebugUtils::new(&entry, instance.as_ref());
-                unsafe { debug_utils.destroy_debug_utils_messenger(m, None) }
-            });
-
-            Some(messenger)
+            messenger
         } else {
-            None
+            vk::DebugUtilsMessengerEXT::null()
         };
+
+        unsafe { *vk_res.debug_messenger_mut() = debug_messenger };
 
         let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
         let binding =
@@ -260,89 +183,81 @@ impl Renderer {
         messenger.send(
             window,
             &AppMessage::CreateVulkanSurface {
-                instance: instance.as_ref().handle().as_raw(),
+                instance: vk_res.instance().handle().as_raw(),
                 out_binding: &binding as *const ResponseBinding,
             },
         );
         binding.wait();
 
-        let surface = OnDropDefer::new(
-            vk::SurfaceKHR::from_raw(unsafe { surface.assume_init() }),
-            |s| {
-                log::debug!("Defered surface destroy called");
-                unsafe { surface_loader.destroy_surface(s, None) };
-            },
-        );
+        unsafe {
+            *vk_res.surface_mut() = vk::SurfaceKHR::from_raw(surface.assume_init());
+        }
 
         let selected_physical_device = Self::select_physical_device(
-            instance.as_ref(),
-            &surface_loader,
-            *surface.as_ref(),
+            vk_res.instance(),
+            vk_res.surface_loader(),
+            vk_res.surface(),
         )?;
 
         let queue_indices = queue::QueueFamilyIndices::fetch(
-            instance.as_ref(),
-            &surface_loader,
-            *surface.as_ref(),
+            vk_res.instance(),
+            vk_res.surface_loader(),
+            vk_res.surface(),
             selected_physical_device,
         );
 
         let device = Self::create_device(
             &entry,
-            instance.as_ref(),
+            vk_res.instance(),
             &queue_indices,
             selected_physical_device,
         )?;
-        let device = OnDropDefer::new(device, |d| unsafe {
-            log::debug!("Defered device destroy called");
-            d.destroy_device(None);
-        });
+        unsafe { *vk_res.device_mut() = Some(device) };
 
         let graphics_queue = unsafe {
-            device
-                .as_ref()
+            vk_res
+                .device()
                 .get_device_queue(queue_indices.graphics_family.unwrap(), 0)
         };
 
         let present_queue = unsafe {
-            device
-                .as_ref()
+            vk_res
+                .device()
                 .get_device_queue(queue_indices.present_family.unwrap(), 0)
         };
 
         let swapchain_info = swapchain_info::SwapchainSupportInfo::fetch(
-            &surface_loader,
-            *surface.as_ref(),
+            vk_res.surface_loader(),
+            vk_res.surface(),
             selected_physical_device,
         )
         .unwrap();
-        let swapchain_loader = khr::Swapchain::new(instance.as_ref(), device.as_ref());
-        let (swapchain, swapchain_img_format, swapchain_img_extent) = Self::create_swapchain(
-            window,
-            messenger,
-            &swapchain_info,
-            *surface.as_ref(),
-            &queue_indices,
-            &swapchain_loader,
-        )
-        .map(|result| {
-            (
-                OnDropDefer::new(result.0, |s| {
-                    log::debug!("Defered swapchain destroy called");
-                    unsafe { swapchain_loader.destroy_swapchain(s, None) };
-                }),
-                result.1,
-                result.2,
-            )
-        })?;
+
+        unsafe {
+            *vk_res.swapchain_loader_mut() =
+                Some(khr::Swapchain::new(vk_res.instance(), vk_res.device()));
+        }
+        let (swapchain_img_format, swapchain_img_extent) = unsafe {
+            let (swapchain, swapchain_img_format, swapchain_img_extent) = Self::create_swapchain(
+                window,
+                messenger,
+                &swapchain_info,
+                vk_res.surface(),
+                &queue_indices,
+                vk_res.swapchain_loader(),
+            )?;
+            *vk_res.swapchain_mut() = swapchain;
+
+            (swapchain_img_format, swapchain_img_extent)
+        };
 
         let swapchain_images = unsafe {
-            swapchain_loader
-                .get_swapchain_images(*swapchain.as_ref())
+            vk_res
+                .swapchain_loader()
+                .get_swapchain_images(vk_res.swapchain())
                 .map_err(RendererError::VulkanInfoQueryFailed)?
         };
 
-        let mut swapchain_image_views: Vec<vk::ImageView> = Vec::new();
         for &img in &swapchain_images {
             let img_view_info = vk::ImageViewCreateInfo {
                 image: img,
@@ -364,165 +279,78 @@ impl Renderer {
                 ..Default::default()
             };
 
-            let img_view = unsafe { device.as_ref().create_image_view(&img_view_info, None) }
-                .map_err(|err| {
-                    for &view in &swapchain_image_views {
-                        unsafe { device.as_ref().destroy_image_view(view, None) };
-                    }
-                    RendererError::FailedToCreateImageView(err)
-                })?;
-            swapchain_image_views.push(img_view);
+            let img_view = unsafe { vk_res.device().create_image_view(&img_view_info, None) }
+                .map_err(RendererError::FailedToCreateImageView)?;
+            unsafe {
+                vk_res
+                    .swapchain_image_views_mut()
+                    .push(img_view);
+            }
         }
 
-        let swapchain_image_views = OnDropDefer::new(swapchain_image_views, |siv| {
-            log::debug!("Defered swapchain image views drop called");
-            for view in siv {
-                unsafe { device.as_ref().destroy_image_view(view, None) };
-            }
-        });
+        unsafe {
+            *vk_res.render_pass_mut() =
+                Self::create_render_pass(vk_res.device(), swapchain_img_format.format)?;
+        }
+        unsafe {
+            let (pipeline, pipeline_layout) =
+                Self::create_graphics_pipeline(
+                    vk_res.device(),
+                    swapchain_img_extent,
+                    vk_res.render_pass(),
+                )?;
+            *vk_res.pipeline_mut() = pipeline_layout;
+            *vk_res.pipeline_layout_mut() = pipeline;
+        }
 
-        let render_pass = OnDropDefer::new(
-            Self::create_render_pass(device.as_ref(), swapchain_img_format.format)?,
-            |rpass| {
-                log::debug!("Defered render pass drop called");
-                unsafe { device.as_ref().destroy_render_pass(rpass, None) };
-            },
-        );
-        let pipeline_pack = OnDropDefer::new(
-            Self::create_graphics_pipeline(
-                device.as_ref(),
-                swapchain_img_extent,
-                *render_pass.as_ref(),
-            )?,
-            |(p_layout, p)| {
-                log::debug!("Defered pipeline drop called");
-                unsafe { device.as_ref().destroy_pipeline(p, None) };
-                log::debug!("Defered pipeline layout drop called");
-                unsafe { device.as_ref().destroy_pipeline_layout(p_layout, None) };
-            },
-        );
+        unsafe {
+            *vk_res.framebuffers_mut() =
+                Self::create_framebuffers(
+                    vk_res.device(),
+                    vk_res.render_pass(),
+                    swapchain_img_extent,
+                    vk_res.swapchain_image_views(),
+                )?;
+        }
 
-        let framebuffers = OnDropDefer::new(
-            Self::create_framebuffers(
-                device.as_ref(),
-                render_pass.as_ref(),
-                swapchain_img_extent,
-                swapchain_image_views.as_ref(),
-            )?,
-            |fbuffers| {
-                for fbuf in fbuffers {
-                    unsafe { device.as_ref().destroy_framebuffer(fbuf, None) };
-                }
-            },
-        );
-
-        let command_pool = OnDropDefer::new(
-            {
-                let command_pool_info = vk::CommandPoolCreateInfo {
-                    flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-                    queue_family_index: queue_indices.graphics_family.unwrap(),
-                    ..Default::default()
-                };
-                unsafe {
-                    device
-                        .as_ref()
-                        .create_command_pool(&command_pool_info, None)
-                }
-                .map_err(RendererError::FailedToCreateCommandPool)
-            }?,
-            |cpool| {
-                log::debug!("Defered destroy command pool called");
-                unsafe { device.as_ref().destroy_command_pool(cpool, None) };
-            },
-        );
+        let command_pool_info = vk::CommandPoolCreateInfo {
+            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index: queue_indices.graphics_family.unwrap(),
+            ..Default::default()
+        };
+        unsafe {
+            *vk_res.command_pool_mut() =
+                vk_res
+                    .device()
+                    .create_command_pool(&command_pool_info, None)
+                    .map_err(RendererError::FailedToCreateCommandPool)?;
+        }
 
         let command_buffer_info = vk::CommandBufferAllocateInfo {
-            command_pool: *command_pool.as_ref(),
+            command_pool: vk_res.command_pool(),
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 1,
+            command_buffer_count: MAX_CONCURRENT_FRAMES.try_into().unwrap(),
             ..Default::default()
         };
-        let primary_command_buffer = *unsafe {
-            device
-                .as_ref()
+        let command_buffers = unsafe {
+            vk_res
+                .device()
                 .allocate_command_buffers(&command_buffer_info)
         }
-        .map_err(RendererError::FailedToCreateCommandBuffer)?
-        .first()
-        .unwrap();
+        .map_err(RendererError::FailedToCreateCommandBuffer)?;
 
-        let semaphore_info = vk::SemaphoreCreateInfo::default();
-        let fence_info = vk::FenceCreateInfo {
-            flags: vk::FenceCreateFlags::SIGNALED,
-            ..Default::default()
-        };
-
-        let img_available_semaphore = OnDropDefer::new(unsafe {
-                device.as_ref().create_semaphore(&semaphore_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
-            },
-            |sem| {
-                log::debug!("Defered destroy semaphore called");
-                unsafe { device.as_ref().destroy_semaphore(sem, None) };
-            },
-        );
-        let render_finished_semaphore = OnDropDefer::new(unsafe {
-                device.as_ref().create_semaphore(&semaphore_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
-            },
-            |sem| {
-                log::debug!("Defered destroy semaphore called");
-                unsafe { device.as_ref().destroy_semaphore(sem, None) };
-            },
-        );
-        let in_flight_fence = OnDropDefer::new(unsafe {
-                device.as_ref().create_fence(&fence_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
-            },
-            |fen| {
-                log::debug!("Defered destroy semaphore called");
-                unsafe { device.as_ref().destroy_fence(fen, None) };
-            },
-        );
-
-        let img_available_sem = img_available_semaphore.take();
-        let render_finished_sem = render_finished_semaphore.take();
-        let in_flight_fence = in_flight_fence.take();
-        let command_pool = command_pool.take();
-        let framebuffers = framebuffers.take();
-        let (pipeline_layout, pipeline) = pipeline_pack.take();
-        let render_pass = render_pass.take();
-        let swapchain_image_views = swapchain_image_views.take();
-        let swapchain = swapchain.take();
-        let device = device.take();
-        let surface = surface.take();
-        let debug_messenger = debug_messenger.map(OnDropDefer::take);
-        let instance = instance.take();
+        unsafe { vk_res.create_sync_objects(MAX_CONCURRENT_FRAMES)? };
 
         Ok(Renderer {
             entry,
-            instance,
-            debug_messenger,
-            surface_loader,
-            surface,
-            device,
+            vk_res,
             graphics_queue,
             present_queue,
-            swapchain_loader,
-            swapchain,
             swapchain_images,
             swapchain_img_format,
             swapchain_img_extent,
-            swapchain_image_views,
-            render_pass,
-            pipeline_layout,
-            pipeline,
-            framebuffers,
-            command_pool,
-            primary_command_buffer,
-            img_available_sem,
-            render_finished_sem,
-            in_flight_fence,
+            command_buffers,
+            current_frame: 0,
         })
     }
 
@@ -658,7 +486,7 @@ impl Renderer {
                             false
                         })
                 })
-                .ok_or(RendererError::NoAvailableVideoAdapter)
+                .ok_or(RendererError::NoSupportedVideoAdapter)
         }
     }
 
@@ -1098,14 +926,14 @@ impl Renderer {
 
     fn create_framebuffers(
         device: &ash::Device,
-        render_pass: &vk::RenderPass,
+        render_pass: vk::RenderPass,
         extent: vk::Extent2D,
         img_views: &[vk::ImageView],
     ) -> Result<Vec<vk::Framebuffer>, RendererError> {
         let mut result = Vec::new();
         for img_view in img_views {
             let framebuffer_info = vk::FramebufferCreateInfo {
-                render_pass: *render_pass,
+                render_pass,
                 attachment_count: 1,
                 p_attachments: img_view as *const _,
                 width: extent.width,
@@ -1137,14 +965,14 @@ impl Renderer {
         };
 
         unsafe {
-            self.device
+            self.vk_res.device()
                 .begin_command_buffer(cmdbuf, &command_buffer_begin_info)
         }
         .map_err(RendererError::CommandBufferRecordingError)?;
 
         let render_pass_begin_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass,
-            framebuffer: self.framebuffers[img_idx],
+            render_pass: self.vk_res.render_pass(),
+            framebuffer: self.vk_res.framebuffers()[img_idx],
             render_area: vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: self.swapchain_img_extent,
@@ -1173,42 +1001,44 @@ impl Renderer {
         };
 
         unsafe {
-            self.device.cmd_begin_render_pass(
+            self.vk_res.device().cmd_begin_render_pass(
                 cmdbuf,
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
-            self.device
-                .cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            self.device.cmd_set_viewport(cmdbuf, 0, &[viewport]);
-            self.device.cmd_set_scissor(cmdbuf, 0, &[scissor]);
-            self.device.cmd_draw(cmdbuf, 3, 1, 0, 0);
+            self.vk_res.device()
+                .cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.vk_res.pipeline());
+            self.vk_res.device().cmd_set_viewport(cmdbuf, 0, &[viewport]);
+            self.vk_res.device().cmd_set_scissor(cmdbuf, 0, &[scissor]);
+            self.vk_res.device().cmd_draw(cmdbuf, 3, 1, 0, 0);
 
-            self.device.cmd_end_render_pass(cmdbuf);
+            self.vk_res.device().cmd_end_render_pass(cmdbuf);
 
-            self.device
+            self.vk_res.device()
                 .end_command_buffer(cmdbuf)
                 .map_err(RendererError::CommandBufferRecordingError)
         }
     }
 
     pub fn draw_frame(&mut self) -> Result<(), RendererError> {
+        let in_flight_fence = self.vk_res.in_flight_fences()[self.current_frame];
+
         let img_idx = unsafe {
-            self.device.wait_for_fences(&[self.in_flight_fence], false, u64::MAX)
+            self.vk_res.device().wait_for_fences(&[in_flight_fence], false, u64::MAX)
                 .map_err(RendererError::FailedToDrawFrame)?;
-            self.device.reset_fences(&[self.in_flight_fence])
+            self.vk_res.device().reset_fences(&[in_flight_fence])
                 .map_err(RendererError::FailedToDrawFrame)?;
 
-            let (img_idx, _swapchain_suboptimal) = self.swapchain_loader.acquire_next_image(
-                self.swapchain,
+            let (img_idx, _swapchain_suboptimal) = self.vk_res.swapchain_loader().acquire_next_image(
+                self.vk_res.swapchain(),
                 u64::MAX,
-                self.img_available_sem,
+                self.vk_res.img_available_semaphores()[self.current_frame],
                 vk::Fence::null(),
             )
             .map_err(RendererError::FailedToDrawFrame)?;
 
-            self.device.reset_command_buffer(
-                self.primary_command_buffer,
+            self.vk_res.device().reset_command_buffer(
+                self.command_buffers[self.current_frame],
                 vk::CommandBufferResetFlags::empty(),
             )
             .map_err(RendererError::FailedToDrawFrame)?;
@@ -1216,12 +1046,15 @@ impl Renderer {
             img_idx
         };
 
-        self.record_command_buffer(self.primary_command_buffer, img_idx.try_into().unwrap())?;
+        self.record_command_buffer(
+            self.command_buffers[self.current_frame],
+            img_idx.try_into().unwrap(),
+        )?;
 
-        let wait_semaphores = [self.img_available_sem];
+        let wait_semaphores = [self.vk_res.img_available_semaphores()[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.render_finished_sem];
-        let command_buffers = [self.primary_command_buffer];
+        let signal_semaphores = [self.vk_res.render_finished_semaphores()[self.current_frame]];
+        let command_buffers = [self.command_buffers[self.current_frame]];
         let submit_info = vk::SubmitInfo {
             wait_semaphore_count: 1,
             p_wait_semaphores: wait_semaphores.as_ptr(),
@@ -1234,10 +1067,16 @@ impl Renderer {
         };
 
         unsafe {
-            self.device.queue_submit(self.graphics_queue, &[submit_info], self.in_flight_fence)
+            self.vk_res
+                .device()
+                .queue_submit(
+                    self.graphics_queue,
+                    &[submit_info],
+                    self.vk_res.in_flight_fences()[self.current_frame]
+                )
                 .map_err(RendererError::FailedToDrawFrame)?;
 
-            let swapchains = [self.swapchain];
+            let swapchains = [self.vk_res.swapchain()];
 
             let present_info = vk::PresentInfoKHR {
                 wait_semaphore_count: 1,
@@ -1248,8 +1087,10 @@ impl Renderer {
                 ..Default::default()
             };
 
-            self.swapchain_loader.queue_present(self.present_queue, &present_info)
+            self.vk_res.swapchain_loader().queue_present(self.present_queue, &present_info)
                 .map_err(RendererError::FailedToDrawFrame)?;
+
+            self.current_frame = (self.current_frame + 1) % MAX_CONCURRENT_FRAMES;
         }
 
         Ok(())
