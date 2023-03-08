@@ -1,7 +1,10 @@
 #![allow(unused)]
 
-use ash::{extensions::{ext, khr}, vk};
 use crate::renderer::RendererError;
+use ash::{
+    extensions::{ext, khr},
+    vk,
+};
 
 pub struct RendererResourceKeeper {
     instance: Option<ash::Instance>,
@@ -219,19 +222,29 @@ impl RendererResourceKeeper {
 
         for i in 0..count {
             self.img_available_semaphores.push(
-                self.device().create_semaphore(&semaphore_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
+                self.device()
+                    .create_semaphore(&semaphore_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?,
             );
             self.render_finished_semaphores.push(
-                self.device().create_semaphore(&semaphore_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
+                self.device()
+                    .create_semaphore(&semaphore_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?,
             );
             self.in_flight_fences.push(
-                self.device().create_fence(&fence_info, None)
-                    .map_err(RendererError::FailedToCreateSyncObject)?
+                self.device()
+                    .create_fence(&fence_info, None)
+                    .map_err(RendererError::FailedToCreateSyncObject)?,
             );
         }
 
+        Ok(())
+    }
+
+    pub fn recreate_swapchain(&mut self) -> Result<(), RendererError> {
+        unsafe { self.device().device_wait_idle() };
+
+        // unsafe { self.destroy_swapchain() };
         Ok(())
     }
 }
@@ -269,14 +282,17 @@ impl Default for RendererResourceKeeper {
 impl Drop for RendererResourceKeeper {
     fn drop(&mut self) {
         if let Some(device) = &self.device {
-            unsafe { device.device_wait_idle() }
-                .unwrap_or_else(|e| {
-                    log::error!("FATAL: Could not wait for device idle on Renderer destroying: {e}");
-                    std::process::abort();
-                });
+            unsafe { device.device_wait_idle() }.unwrap_or_else(|e| {
+                log::error!("FATAL: Could not wait for device idle on Renderer destroying: {e}");
+                std::process::abort();
+            });
 
             log::debug!("Destroying Vulkan semaphores");
-            for &sem in self.img_available_semaphores.iter().chain(self.render_finished_semaphores.iter()) {
+            for &sem in self
+                .img_available_semaphores
+                .iter()
+                .chain(self.render_finished_semaphores.iter())
+            {
                 unsafe { device.destroy_semaphore(sem, None) };
             }
 
@@ -297,10 +313,7 @@ impl Drop for RendererResourceKeeper {
             unsafe { device.destroy_pipeline(self.pipeline, None) };
 
             log::debug!("Destroying Vulkan pipeline layout");
-            unsafe {
-                device
-                    .destroy_pipeline_layout(self.pipeline_layout, None)
-            };
+            unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
 
             log::debug!("Destroying Vulkan render pass");
             unsafe { device.destroy_render_pass(self.render_pass, None) };
@@ -312,9 +325,7 @@ impl Drop for RendererResourceKeeper {
 
             if let Some(swapchain_loader) = &self.swapchain_loader {
                 log::debug!("Destroying Vulkan swapchain");
-                unsafe {
-                    swapchain_loader.destroy_swapchain(self.swapchain, None)
-                };
+                unsafe { swapchain_loader.destroy_swapchain(self.swapchain, None) };
             }
 
             log::debug!("Destroying Vulkan device");

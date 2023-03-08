@@ -82,6 +82,16 @@ macro_rules! app_entry {
     };
 }
 
+#[macro_export]
+macro_rules! app_process {
+    ($process_fn:ident) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn faisca_process() -> i32 {
+            $process_fn()
+        }
+    };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn faisca_message_app(
     w: ffi::WindowInstance,

@@ -22,9 +22,12 @@ namespace faisca {
         APPMSG_SET_FULLSCREEN,
         APPMSG_SET_BORDERLESS,
         APPMSG_SET_WINDOW_TITLE,
+
         APPMSG_CREATE_VULKAN_SURFACE,
         APPMSG_QUERY_VIEWPORT_EXTENT,
         APPMSG_SET_MSG_BACKCHANNEL,
+
+        APPMSG_PUMP_EVENTS,
     };
 
     struct AppMessage {
@@ -54,12 +57,16 @@ namespace faisca {
 
     enum WindowEventType {
         WINEVT_QUIT = 1,
+        WINEVT_WINDOW_RESIZE,
     };
 
     struct WindowEvent {
         uint32_t type;
         union {
-            uint32_t keyDown;
+            struct {
+                uint32_t w;
+                uint32_t h;
+            } windowResize;
         };
     };
 

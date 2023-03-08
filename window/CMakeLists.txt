@@ -14,5 +14,8 @@ set(FAISCA_SOURCES
 )
 
 add_executable(Window ${FAISCA_SOURCES})
+
+set_property(TARGET Window PROPERTY CXX_STANDARD_REQUIRED 17)
+
 target_include_directories(Window PUBLIC include SDL2/include)
 target_link_libraries(Window PUBLIC SDL2 SDL2main)

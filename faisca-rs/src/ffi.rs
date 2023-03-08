@@ -83,7 +83,7 @@ pub enum WindowMessage {
 #[repr(C, u32)]
 pub enum WindowEvent {
     Quit = 1,
-    KeyDown { c: u32 },
+    WindowResize { w: u32, h: u32 },
 }
 
 #[repr(C)]

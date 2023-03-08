@@ -1,38 +1,58 @@
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <vector>
+#include <mutex>
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <thread>
+#include <vector>
 
 #include <defines.hpp>
 #include <dylib.hpp>
 
 using namespace faisca;
+using namespace std::chrono_literals;
 
 static uint32_t gUserEventNum = 0;
+
+static std::mutex gEventWaitMutex;
+static std::condition_variable gEventWaitFence;
+static bool gEventWaitFlag = false;
 
 extern "C" {
     uint32_t ECABI FaiscaMessageWindow(WindowInstance win, const AppMessage *msg) {
         AppMessage *ourMessage = new AppMessage;
         *ourMessage = *msg;
-        if (msg->type == APPMSG_SET_WINDOW_TITLE) {
-            // We must copy the pointed data so that we own it
-            // The +1 is to account for the NULL byte
-            size_t strLength = strnlen(msg->windowTitle, 255) + 1;
-            char *ourString = new char[strLength];
-            SDL_strlcpy(ourString, msg->windowTitle, strLength);
-            // We now point to our allocated string
-            ourMessage->windowTitle = ourString;
+        switch (msg->type) {
+            case APPMSG_SET_WINDOW_TITLE: {
+                // We must copy the pointed data so that we own it
+                // The +1 is to account for the NULL byte
+                size_t strLength = strnlen(msg->windowTitle, 255) + 1;
+                char *ourString = new char[strLength];
+                SDL_strlcpy(ourString, msg->windowTitle, strLength);
+                // We now point to our allocated string
+                ourMessage->windowTitle = ourString;
+            } break;
+            default:
+                break;
         }
+
         SDL_Event e = {};
         e.type = SDL_USEREVENT;
         e.user.type = gUserEventNum;
         e.user.code = ourMessage->type;
         e.user.data1 = ourMessage;
         e.user.data2 = win;
+
         if (SDL_PushEvent(&e) != 0) {
+            // If pushed an event, notify to wake the event thread earlier.
+            {
+                std::unique_lock<std::mutex> lk(gEventWaitMutex);
+                gEventWaitFlag = true;
+            }
+            gEventWaitFence.notify_all();
             return 1;
         } else {
             return 0;
@@ -95,12 +115,12 @@ int main(int argc, char *argv[]) {
     SDL_Event e;
     bool running = true;
     while (running) {
-        int res = SDL_WaitEvent(&e);
-        if (res) {
+        // int res = SDL_WaitEvent(&e);
+        if (SDL_PollEvent(&e) != 0) {
             switch (e.type) {
                 case SDL_QUIT: {
                     running = false;
-                    WindowEvent windowEvent = WindowEvent {};
+                    WindowEvent windowEvent {};
                     windowEvent.type = WINEVT_QUIT;
 
                     WindowMessage windowMessage {};
@@ -109,6 +129,21 @@ int main(int argc, char *argv[]) {
                     windowMessage.windowEvent.windowEvent = &windowEvent;
 
                     messageApp(mainWindow, &windowMessage);
+                } break;
+                case SDL_WINDOWEVENT_RESIZED: {
+                    WindowEvent windowEvent = WindowEvent {};
+                    windowEvent.type = WINEVT_WINDOW_RESIZE;
+                    windowEvent.windowResize.w = e.window.data1;
+                    windowEvent.windowResize.h = e.window.data2;
+
+                    WindowMessage windowMessage {};
+                    windowMessage.type = WINMSG_WINDOW_EVENT;
+                    windowMessage.windowEvent.msgBackchannel = backChannel;
+                    windowMessage.windowEvent.windowEvent = &windowEvent;
+
+                    SDL_Window *eWindow = SDL_GetWindowFromID(e.window.windowID);
+
+                    messageApp(eWindow, &windowMessage);
                 } break;
                 case SDL_USEREVENT: {
                     const AppMessage *msg = static_cast<const AppMessage*>(e.user.data1);
@@ -166,8 +201,12 @@ int main(int argc, char *argv[]) {
                     delete msg;
                 } break;
             }
-        } else {
-            std::cerr << "An error ocurred while waiting for an event: " << SDL_GetError() << std::endl;
+        } // End of SDL_PollEvent
+
+        {
+            std::unique_lock<std::mutex> lk(gEventWaitMutex);
+            gEventWaitFence.wait_for(lk, 16ms, []{return gEventWaitFlag;});
+            gEventWaitFlag = false;
         }
     }
 

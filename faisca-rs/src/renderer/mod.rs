@@ -149,10 +149,13 @@ impl Renderer {
 
         log::debug!("VkInstanceCreateInfo: {instance_info:#?}");
 
-        unsafe { *vk_res.instance_mut() = Some(
-            entry.create_instance(&instance_info, None)
-                .map_err(RendererError::FailedToCreateInstance)?
-        )};
+        unsafe {
+            *vk_res.instance_mut() = Some(
+                entry
+                    .create_instance(&instance_info, None)
+                    .map_err(RendererError::FailedToCreateInstance)?,
+            )
+        };
 
         log::debug!("Vulkan Instance created");
 
@@ -166,9 +169,12 @@ impl Renderer {
         // This is how the driver tells us a bit about what it is doing on its
         // end, and gives feedback about how badly we're working on our end.
         let debug_messenger = if crate::DEBUG_ENABLED {
-            let messenger =
-                unsafe { vk_res.debug_loader().create_debug_utils_messenger(&debug_messenger_info, None) }
-                    .map_err(RendererError::FailedToCreateDebugMessenger)?;
+            let messenger = unsafe {
+                vk_res
+                    .debug_loader()
+                    .create_debug_utils_messenger(&debug_messenger_info, None)
+            }
+            .map_err(RendererError::FailedToCreateDebugMessenger)?;
 
             messenger
         } else {
@@ -282,9 +288,7 @@ impl Renderer {
             let img_view = unsafe { vk_res.device().create_image_view(&img_view_info, None) }
                 .map_err(RendererError::FailedToCreateImageView)?;
             unsafe {
-                vk_res
-                    .swapchain_image_views_mut()
-                    .push(img_view);
+                vk_res.swapchain_image_views_mut().push(img_view);
             }
         }
 
@@ -293,24 +297,22 @@ impl Renderer {
                 Self::create_render_pass(vk_res.device(), swapchain_img_format.format)?;
         }
         unsafe {
-            let (pipeline, pipeline_layout) =
-                Self::create_graphics_pipeline(
-                    vk_res.device(),
-                    swapchain_img_extent,
-                    vk_res.render_pass(),
-                )?;
+            let (pipeline, pipeline_layout) = Self::create_graphics_pipeline(
+                vk_res.device(),
+                swapchain_img_extent,
+                vk_res.render_pass(),
+            )?;
             *vk_res.pipeline_mut() = pipeline_layout;
             *vk_res.pipeline_layout_mut() = pipeline;
         }
 
         unsafe {
-            *vk_res.framebuffers_mut() =
-                Self::create_framebuffers(
-                    vk_res.device(),
-                    vk_res.render_pass(),
-                    swapchain_img_extent,
-                    vk_res.swapchain_image_views(),
-                )?;
+            *vk_res.framebuffers_mut() = Self::create_framebuffers(
+                vk_res.device(),
+                vk_res.render_pass(),
+                swapchain_img_extent,
+                vk_res.swapchain_image_views(),
+            )?;
         }
 
         let command_pool_info = vk::CommandPoolCreateInfo {
@@ -319,11 +321,10 @@ impl Renderer {
             ..Default::default()
         };
         unsafe {
-            *vk_res.command_pool_mut() =
-                vk_res
-                    .device()
-                    .create_command_pool(&command_pool_info, None)
-                    .map_err(RendererError::FailedToCreateCommandPool)?;
+            *vk_res.command_pool_mut() = vk_res
+                .device()
+                .create_command_pool(&command_pool_info, None)
+                .map_err(RendererError::FailedToCreateCommandPool)?;
         }
 
         let command_buffer_info = vk::CommandBufferAllocateInfo {
@@ -465,12 +466,8 @@ impl Renderer {
                 .iter()
                 .cloned()
                 .find(|&d| {
-                    let family_indices = queue::QueueFamilyIndices::fetch(
-                        instance,
-                        surface_loader,
-                        surface,
-                        d,
-                    );
+                    let family_indices =
+                        queue::QueueFamilyIndices::fetch(instance, surface_loader, surface, d);
 
                     swapchain_info::SwapchainSupportInfo::fetch(surface_loader, surface, d)
                         .map(|swapchain_info| {
@@ -965,7 +962,8 @@ impl Renderer {
         };
 
         unsafe {
-            self.vk_res.device()
+            self.vk_res
+                .device()
                 .begin_command_buffer(cmdbuf, &command_buffer_begin_info)
         }
         .map_err(RendererError::CommandBufferRecordingError)?;
@@ -1006,15 +1004,21 @@ impl Renderer {
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
-            self.vk_res.device()
-                .cmd_bind_pipeline(cmdbuf, vk::PipelineBindPoint::GRAPHICS, self.vk_res.pipeline());
-            self.vk_res.device().cmd_set_viewport(cmdbuf, 0, &[viewport]);
+            self.vk_res.device().cmd_bind_pipeline(
+                cmdbuf,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.vk_res.pipeline(),
+            );
+            self.vk_res
+                .device()
+                .cmd_set_viewport(cmdbuf, 0, &[viewport]);
             self.vk_res.device().cmd_set_scissor(cmdbuf, 0, &[scissor]);
             self.vk_res.device().cmd_draw(cmdbuf, 3, 1, 0, 0);
 
             self.vk_res.device().cmd_end_render_pass(cmdbuf);
 
-            self.vk_res.device()
+            self.vk_res
+                .device()
                 .end_command_buffer(cmdbuf)
                 .map_err(RendererError::CommandBufferRecordingError)
         }
@@ -1024,24 +1028,29 @@ impl Renderer {
         let in_flight_fence = self.vk_res.in_flight_fences()[self.current_frame];
 
         let img_idx = unsafe {
-            self.vk_res.device().wait_for_fences(&[in_flight_fence], false, u64::MAX)
-                .map_err(RendererError::FailedToDrawFrame)?;
-            self.vk_res.device().reset_fences(&[in_flight_fence])
+            self.vk_res
+                .device()
+                .wait_for_fences(&[in_flight_fence], false, u64::MAX)
                 .map_err(RendererError::FailedToDrawFrame)?;
 
-            let (img_idx, _swapchain_suboptimal) = self.vk_res.swapchain_loader().acquire_next_image(
-                self.vk_res.swapchain(),
-                u64::MAX,
-                self.vk_res.img_available_semaphores()[self.current_frame],
-                vk::Fence::null(),
-            )
-            .map_err(RendererError::FailedToDrawFrame)?;
+            let (img_idx, _swapchain_suboptimal) = self
+                .vk_res
+                .swapchain_loader()
+                .acquire_next_image(
+                    self.vk_res.swapchain(),
+                    u64::MAX,
+                    self.vk_res.img_available_semaphores()[self.current_frame],
+                    vk::Fence::null(),
+                )
+                .map_err(RendererError::FailedToDrawFrame)?;
 
-            self.vk_res.device().reset_command_buffer(
-                self.command_buffers[self.current_frame],
-                vk::CommandBufferResetFlags::empty(),
-            )
-            .map_err(RendererError::FailedToDrawFrame)?;
+            self.vk_res
+                .device()
+                .reset_command_buffer(
+                    self.command_buffers[self.current_frame],
+                    vk::CommandBufferResetFlags::empty(),
+                )
+                .map_err(RendererError::FailedToDrawFrame)?;
 
             img_idx
         };
@@ -1069,10 +1078,15 @@ impl Renderer {
         unsafe {
             self.vk_res
                 .device()
+                .reset_fences(&[in_flight_fence])
+                .map_err(RendererError::FailedToDrawFrame)?;
+
+            self.vk_res
+                .device()
                 .queue_submit(
                     self.graphics_queue,
                     &[submit_info],
-                    self.vk_res.in_flight_fences()[self.current_frame]
+                    self.vk_res.in_flight_fences()[self.current_frame],
                 )
                 .map_err(RendererError::FailedToDrawFrame)?;
 
@@ -1087,12 +1101,19 @@ impl Renderer {
                 ..Default::default()
             };
 
-            self.vk_res.swapchain_loader().queue_present(self.present_queue, &present_info)
+            self.vk_res
+                .swapchain_loader()
+                .queue_present(self.present_queue, &present_info)
                 .map_err(RendererError::FailedToDrawFrame)?;
 
             self.current_frame = (self.current_frame + 1) % MAX_CONCURRENT_FRAMES;
         }
 
+        Ok(())
+    }
+
+    pub fn window_resized(&mut self, new_width: u32, new_height: u32) -> Result<(), RendererError> {
+        log::debug!("Renderer received window resized");
         Ok(())
     }
 }
