@@ -1,6 +1,8 @@
 #ifndef FAISCA_DEFINES_HPP_
 #define FAISCA_DEFINES_HPP_
 
+#include <vulkan/vulkan.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #define ECABI __cdecl
@@ -102,6 +104,15 @@ namespace faisca {
 
     typedef void (ECABI *FnRunApp)(WindowInstance, FnMessageWindow);
     typedef uint32_t (ECABI *FnMessageApp)(WindowInstance, const WindowMessage*);
+
+    typedef int32_t (ECABI *FnSurfaceCreate)(WindowInstance, VkInstance, VkSurfaceKHR*);
+    typedef int32_t (ECABI *FnWindowGetExtent)(WindowInstance, VkExtent2D*);
+
+    struct WState {
+        WindowInstance window;
+        FnSurfaceCreate surfaceCreateFn;
+        FnWindowGetExtent windowGetExtentFn;
+    };
 }
 
 #endif // FAISCA_DEFINES_HPP_
