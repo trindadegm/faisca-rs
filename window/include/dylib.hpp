@@ -3,6 +3,10 @@
 
 #include <defines.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace faisca {
     #ifdef _WIN32
     typedef HINSTANCE LibHandle;
