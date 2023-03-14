@@ -284,6 +284,9 @@ impl RendererResourceKeeper {
         swapchain_info: &SwapchainSupportInfo,
         window_extent: vk::Extent2D,
     ) -> Result<(), RendererError> {
+        log::debug!("Creating swapchain with window extent: {window_extent:?}");
+        log::debug!("Swapchain info: {swapchain_info:#?}");
+
         let surface_format = swapchain_info.select_format().unwrap();
         let present_mode = swapchain_info.select_present_mode();
 
@@ -340,7 +343,9 @@ impl RendererResourceKeeper {
 
         self.swapchain_info = Some(swapchain_info.clone());
 
+        log::debug!("Creating image views");
         self.create_image_views(surface_format)?;
+        log::debug!("Creating framebuffers");
         self.create_framebuffers(selected_extent)?;
 
         Ok(())
@@ -416,11 +421,13 @@ impl RendererResourceKeeper {
         for &fbuf in self.framebuffers.iter() {
             unsafe { self.device().destroy_framebuffer(fbuf, None) };
         }
+        self.framebuffers.clear();
 
         log::debug!("Destroying Vulkan image views");
         for &view in self.swapchain_image_views.iter() {
             unsafe { self.device().destroy_image_view(view, None) };
         }
+        self.swapchain_image_views.clear();
 
         if let Some(swapchain_loader) = &self.swapchain_loader {
             log::debug!("Destroying Vulkan swapchain");

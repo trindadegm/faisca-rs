@@ -1,6 +1,6 @@
 use ash::{extensions::khr, prelude::VkResult, vk};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SwapchainSupportInfo {
     pub capabilities: vk::SurfaceCapabilitiesKHR,
     pub formats: Vec<vk::SurfaceFormatKHR>,

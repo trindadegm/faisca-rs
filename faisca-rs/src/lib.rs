@@ -2,6 +2,8 @@ pub mod ffi;
 pub mod renderer;
 mod util;
 
+pub use ash::vk;
+
 use std::sync::RwLock;
 
 pub use ffi::{

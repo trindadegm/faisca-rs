@@ -972,8 +972,26 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn window_resized(&mut self, new_width: u32, new_height: u32) -> Result<(), RendererError> {
-        log::debug!("Renderer received window resized");
+    pub fn window_resized(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
+        log::debug!("Renderer received window resized: {width}, {height}");
+
+        unsafe { self.vk_res.device().device_wait_idle() }.unwrap_or_else(|e| {
+            log::error!("FATAL: Could not wait for device idle on window_resized: {e}");
+            std::process::abort();
+        });
+
+        let swapchain_info = swapchain_info::SwapchainSupportInfo::fetch(
+            self.vk_res.surface_loader(),
+            self.vk_res.surface(),
+            self.vk_res.physical_device(),
+        )
+        .map_err(RendererError::VulkanInfoQueryFailed)?;
+
+        self.vk_res.destroy_swapchain();
+        self.vk_res.create_swapchain(&swapchain_info, vk::Extent2D { width, height })?;
+
+        self.swapchain_img_extent = swapchain_info.select_extent(vk::Extent2D { width, height });
+
         Ok(())
     }
 }
