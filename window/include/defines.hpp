@@ -19,17 +19,23 @@ namespace faisca {
         FULLSCREEN_DESKTOP = 2,
     };
 
+    enum BooleanType {
+        FAISCA_FALSE = 0,
+        FAISCA_TRUE = 1,
+    };
+
     enum AppMessageType {
         APPMSG_SET_WINDOW_SIZE = 1,
         APPMSG_SET_FULLSCREEN,
         APPMSG_SET_BORDERLESS,
         APPMSG_SET_WINDOW_TITLE,
+        APPMSG_SET_WINDOW_RESIZABLE,
 
-        APPMSG_CREATE_VULKAN_SURFACE,
+        APPMSG_CREATE_VULKAN_SURFACE = 1025,
         APPMSG_QUERY_VIEWPORT_EXTENT,
         APPMSG_SET_MSG_BACKCHANNEL,
 
-        APPMSG_PUMP_EVENTS,
+        APPMSG_PUMP_EVENTS = 2049,
     };
 
     struct AppMessage {
@@ -42,6 +48,8 @@ namespace faisca {
             uint8_t fullscreen;
             uint8_t borderless;
             const char *windowTitle;
+            uint8_t windowResizable;
+
             struct {
                 uint64_t instance_handle;
                 struct {

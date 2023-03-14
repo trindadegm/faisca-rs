@@ -130,21 +130,25 @@ int main(int argc, char *argv[]) {
 
                     messageApp(mainWindow, &windowMessage);
                 } break;
-                case SDL_WINDOWEVENT_RESIZED: {
-                    WindowEvent windowEvent = WindowEvent {};
-                    windowEvent.type = WINEVT_WINDOW_RESIZE;
-                    windowEvent.windowResize.w = e.window.data1;
-                    windowEvent.windowResize.h = e.window.data2;
+                case SDL_WINDOWEVENT:
+                    switch (e.window.event) {
+                        case SDL_WINDOWEVENT_RESIZED: {
+                            WindowEvent windowEvent = WindowEvent {};
+                            windowEvent.type = WINEVT_WINDOW_RESIZE;
+                            windowEvent.windowResize.w = e.window.data1;
+                            windowEvent.windowResize.h = e.window.data2;
 
-                    WindowMessage windowMessage {};
-                    windowMessage.type = WINMSG_WINDOW_EVENT;
-                    windowMessage.windowEvent.msgBackchannel = backChannel;
-                    windowMessage.windowEvent.windowEvent = &windowEvent;
+                            WindowMessage windowMessage {};
+                            windowMessage.type = WINMSG_WINDOW_EVENT;
+                            windowMessage.windowEvent.msgBackchannel = backChannel;
+                            windowMessage.windowEvent.windowEvent = &windowEvent;
 
-                    SDL_Window *eWindow = SDL_GetWindowFromID(e.window.windowID);
+                            SDL_Window *eWindow = SDL_GetWindowFromID(e.window.windowID);
 
-                    messageApp(eWindow, &windowMessage);
-                } break;
+                            messageApp(eWindow, &windowMessage);
+                        } break;
+                    }
+                    break;
                 case SDL_USEREVENT: {
                     const AppMessage *msg = static_cast<const AppMessage*>(e.user.data1);
                     SDL_Window *msgWindow = static_cast<SDL_Window*>(e.user.data2);
@@ -182,6 +186,11 @@ int main(int argc, char *argv[]) {
                             SDL_SetWindowTitle(msgWindow, msg->windowTitle);
                             delete[] msg->windowTitle;
                             break;
+                        case APPMSG_SET_WINDOW_RESIZABLE:
+                            SDL_SetWindowResizable(msgWindow, msg->windowResizable != 0 ? SDL_TRUE : SDL_FALSE);
+                            break;
+
+
                         case APPMSG_CREATE_VULKAN_SURFACE: {
                             SDL_Vulkan_CreateSurface(
                                 msgWindow,

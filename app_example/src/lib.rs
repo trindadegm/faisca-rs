@@ -19,18 +19,15 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
         },
     );
 
+    messenger.send(
+        w,
+        &AppMessage::SetWindowResizable(true),
+    );
+
     let mut renderer = Renderer::new(w, &messenger).unwrap_or_else(|e| {
         log::error!("Failed to create renderer: {e}");
         std::process::abort();
     });
-
-    messenger.send(
-        w,
-        &AppMessage::SetWindowSize {
-            width: 640,
-            height: 480,
-        },
-    );
 
     'app_loop: loop {
         if let Some((_msg_win, win_event)) = messenger.try_recv() {

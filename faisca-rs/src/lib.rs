@@ -93,8 +93,8 @@ macro_rules! app_process {
     };
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn faisca_init_renderer(wstate: *const ffi::WState) {}
+// #[no_mangle]
+// pub unsafe extern "C" fn faisca_init_renderer(wstate: *const ffi::WState) {}
 
 #[no_mangle]
 pub unsafe extern "C" fn faisca_message_app(

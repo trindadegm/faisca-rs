@@ -45,11 +45,13 @@ pub enum AppMessage {
     SetFullscreen(Fullscreen),
     SetBorderless(bool),
     SetWindowTitle(SafeCString),
+    SetWindowResizable(bool),
+
     /// `out_binding` is a vulkan surface handle binding
     CreateVulkanSurface {
         instance: u64,
         out_binding: *const ResponseBinding,
-    },
+    } = 1025,
     /// `out_binding` is a `Extent2D` binding
     QueryViewportExtents {
         out_binding: *const ResponseBinding,
@@ -57,6 +59,8 @@ pub enum AppMessage {
     SetMsgBackchannel {
         channel: *const std::ffi::c_void,
     },
+
+    PumpEvents = 2049,
 }
 
 #[repr(C, u32)]
