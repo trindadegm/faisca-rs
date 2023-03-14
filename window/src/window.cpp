@@ -149,9 +149,22 @@ int main(int argc, char *argv[]) {
                     const AppMessage *msg = static_cast<const AppMessage*>(e.user.data1);
                     SDL_Window *msgWindow = static_cast<SDL_Window*>(e.user.data2);
                     switch (msg->type) {
-                        case APPMSG_SET_WINDOW_SIZE:
+                        case APPMSG_SET_WINDOW_SIZE: {
                             SDL_SetWindowSize(msgWindow, msg->windowSize.width, msg->windowSize.height);
-                            break;
+                            WindowEvent windowEvent = WindowEvent {};
+                            windowEvent.type = WINEVT_WINDOW_RESIZE;
+                            windowEvent.windowResize.w = msg->windowSize.width;
+                            windowEvent.windowResize.h = msg->windowSize.height;
+
+                            WindowMessage windowMessage {};
+                            windowMessage.type = WINMSG_WINDOW_EVENT;
+                            windowMessage.windowEvent.msgBackchannel = backChannel;
+                            windowMessage.windowEvent.windowEvent = &windowEvent;
+
+                            SDL_Window *eWindow = SDL_GetWindowFromID(e.window.windowID);
+
+                            messageApp(eWindow, &windowMessage);
+                        } break;
                         case APPMSG_SET_FULLSCREEN:
                             SDL_SetWindowFullscreen(
                                 msgWindow,

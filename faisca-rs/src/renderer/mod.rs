@@ -973,7 +973,7 @@ impl Renderer {
     }
 
     pub fn window_resized(&mut self, width: u32, height: u32) -> Result<(), RendererError> {
-        log::debug!("Renderer received window resized: {width}, {height}");
+        log::debug!("Renderer resize requested: {width}, {height}");
 
         unsafe { self.vk_res.device().device_wait_idle() }.unwrap_or_else(|e| {
             log::error!("FATAL: Could not wait for device idle on window_resized: {e}");

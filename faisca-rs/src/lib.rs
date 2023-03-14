@@ -112,15 +112,21 @@ pub unsafe extern "C" fn faisca_message_app(
             unsafe { &*binding_address }.notify();
         }
         WindowMessage::WindowEvent { channel, event } => {
-            let channel =
-                unsafe { Box::from_raw(channel as *mut std::sync::mpsc::Sender<WChanMsg>) };
-
-            let event = unsafe { *event };
-            if let WindowEvent::Quit = event {
-                let _ = channel.send((w, event));
+            if channel.is_null() {
+                log::warn!("Dropping window event: channel not set");
             } else {
-                // If it is not a Quit event, we don't want to call the drop
-                Box::leak(channel);
+                let channel =
+                    unsafe { Box::from_raw(channel as *mut std::sync::mpsc::Sender<WChanMsg>) };
+
+                let event = unsafe { *event };
+                let _ = channel.send((w, event));
+                match event {
+                    WindowEvent::Quit => (),
+                    _ => {
+                        // If it is not a Quit event, we don't want to call the drop
+                        Box::leak(channel);
+                    }
+                }
             }
         }
     }

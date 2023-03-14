@@ -8,6 +8,17 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
         &AppMessage::SetWindowTitle(SafeCString::allocate_from_str("VkTut").unwrap()),
     );
 
+    let mut win_extent_w = 800;
+    let mut win_extent_h = 450;
+
+    messenger.send(
+        w,
+        &AppMessage::SetWindowSize {
+            width: win_extent_w,
+            height: win_extent_h,
+        },
+    );
+
     let mut renderer = Renderer::new(w, &messenger).unwrap_or_else(|e| {
         log::error!("Failed to create renderer: {e}");
         std::process::abort();
@@ -20,9 +31,6 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
             height: 480,
         },
     );
-
-    let mut win_extent_w = 640;
-    let mut win_extent_h = 480;
 
     'app_loop: loop {
         if let Some((_msg_win, win_event)) = messenger.try_recv() {
