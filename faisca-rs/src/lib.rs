@@ -1,5 +1,5 @@
-mod ffi;
-mod renderer;
+pub mod ffi;
+pub mod renderer;
 mod util;
 
 use std::sync::RwLock;
@@ -8,7 +8,6 @@ pub use ffi::{
     AppMessage, Fullscreen, MessageWindowFn, SafeCString, WindowEvent, WindowInstance,
     WindowMessage,
 };
-pub use renderer::Renderer;
 
 #[cfg(debug_assertions)]
 pub const DEBUG_ENABLED: bool = true;
@@ -91,6 +90,9 @@ macro_rules! app_process {
         }
     };
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn faisca_init_renderer(wstate: *const ffi::WState) {}
 
 #[no_mangle]
 pub unsafe extern "C" fn faisca_message_app(

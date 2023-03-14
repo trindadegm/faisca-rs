@@ -145,3 +145,41 @@ impl WindowInstance {
 }
 
 pub type MessageWindowFn = unsafe extern "C" fn(WindowInstance, *const AppMessage) -> u32;
+
+/// A function that creates a Vulkan surface (KHR) from a [WindowInstance].
+/// If it succeeds, the [SurfaceKHR](ash::vk::SurfaceKHR) will be written to
+/// `out_vulkan_surface`.
+///
+/// # Return status code
+/// This function returns `0` in case of success, and some unspecified
+/// _negative_ value in case of failure. In case this function fails, it
+/// guarantees that it the memory poited by `out_vulkan_surface` was not
+/// touched.
+///
+/// # Safety
+/// - `window_instance` must be a valid [WindowInstance].
+/// - `vulkan_instance` must be a valid [Instance](ash::vk::Instance).
+/// - `out_vulkan_surface` must be a valid pointer to a
+/// [SurfaceKHR](ash::vk::SurfaceKHR), to which it can write into.
+///
+/// ## Thread safety
+/// This function is thread-safe. But it *can* write to `out_vulkan_surface` at
+/// any point before returning, therefore, you should guarantee it has exclusive
+/// access to the memory `out_vulkan_surface` points to.
+///
+/// You should also guarantee that `window_instance` and `vulkan_instance`
+/// remain unmodified while this function executes. As it _may_ read from them
+/// at any moment before it returns.
+pub type SurfaceCreateFn = unsafe extern "C" fn(
+    window_instance: WindowInstance,
+    vulkan_instance: ash::vk::Instance,
+    out_vulkan_surface: *mut ash::vk::SurfaceKHR,
+) -> i32;
+pub type WindowGetExtentFn = unsafe extern "C" fn(WindowInstance, *mut ash::vk::Extent2D) -> i32;
+
+#[repr(C)]
+pub struct WState {
+    window: WindowInstance,
+    surface_create_fn: SurfaceCreateFn,
+    window_get_extent_fn: WindowGetExtentFn,
+}

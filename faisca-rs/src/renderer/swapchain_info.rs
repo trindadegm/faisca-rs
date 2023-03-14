@@ -1,5 +1,6 @@
 use ash::{extensions::khr, prelude::VkResult, vk};
 
+#[derive(Clone)]
 pub struct SwapchainSupportInfo {
     pub capabilities: vk::SurfaceCapabilitiesKHR,
     pub formats: Vec<vk::SurfaceFormatKHR>,
@@ -48,7 +49,7 @@ impl SwapchainSupportInfo {
             .unwrap_or(vk::PresentModeKHR::FIFO)
     }
 
-    pub fn select_extent(&self, window_extent: crate::ffi::Extent2D) -> vk::Extent2D {
+    pub fn select_extent(&self, window_extent: vk::Extent2D) -> vk::Extent2D {
         if self.capabilities.current_extent.width != u32::MAX {
             self.capabilities.current_extent
         } else {

@@ -1,4 +1,4 @@
-use faisca::{AppMessage, Renderer, SafeCString, WindowEvent, WindowInstance, WindowMessenger};
+use faisca::{AppMessage, SafeCString, WindowEvent, WindowInstance, WindowMessenger, renderer::Renderer};
 
 fn entry(w: WindowInstance, messenger: WindowMessenger) {
     env_logger::init();
@@ -28,14 +28,11 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
                     log::info!("Quitting application");
                     break 'app_loop;
                 }
-                WindowEvent::WindowResize { w, h } => {
-                    renderer.window_resized(w, h).unwrap();
-                }
+                _ => (),
             }
         }
-        renderer.draw_frame().unwrap_or_else(|e| {
-            log::error!("{e}");
-        });
+
+        renderer.draw_frame().unwrap();
     }
 }
 

@@ -41,4 +41,12 @@ impl QueueFamilyIndices {
     pub fn has_all(&self) -> bool {
         self.graphics_family.is_some() && self.present_family.is_some()
     }
+
+    #[inline]
+    pub fn none() -> Self {
+        Self {
+            present_family: None,
+            graphics_family: None,
+        }
+    }
 }

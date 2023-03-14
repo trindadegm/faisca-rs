@@ -63,11 +63,10 @@ const MAX_CONCURRENT_FRAMES: usize = 2;
 
 pub struct Renderer {
     vk_res: RendererResourceKeeper,
+    #[allow(unused)]
     entry: ash::Entry,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_img_format: vk::SurfaceFormatKHR,
     swapchain_img_extent: vk::Extent2D,
     command_buffers: Vec<vk::CommandBuffer>,
     current_frame: usize,
@@ -205,6 +204,10 @@ impl Renderer {
             vk_res.surface(),
         )?;
 
+        unsafe {
+            *vk_res.physical_device_mut() = selected_physical_device;
+        }
+
         let queue_indices = queue::QueueFamilyIndices::fetch(
             vk_res.instance(),
             vk_res.surface_loader(),
@@ -232,6 +235,8 @@ impl Renderer {
                 .get_device_queue(queue_indices.present_family.unwrap(), 0)
         };
 
+        unsafe { *vk_res.queue_families_mut() = queue_indices };
+
         let swapchain_info = swapchain_info::SwapchainSupportInfo::fetch(
             vk_res.surface_loader(),
             vk_res.surface(),
@@ -243,59 +248,28 @@ impl Renderer {
             *vk_res.swapchain_loader_mut() =
                 Some(khr::Swapchain::new(vk_res.instance(), vk_res.device()));
         }
-        let (swapchain_img_format, swapchain_img_extent) = unsafe {
-            let (swapchain, swapchain_img_format, swapchain_img_extent) = Self::create_swapchain(
-                window,
-                messenger,
-                &swapchain_info,
-                vk_res.surface(),
-                &queue_indices,
-                vk_res.swapchain_loader(),
-            )?;
-            *vk_res.swapchain_mut() = swapchain;
 
-            (swapchain_img_format, swapchain_img_extent)
-        };
+        let mut extent = MaybeUninit::<vk::Extent2D>::uninit();
+        let out_binding =
+            unsafe { ResponseBinding::new(extent.as_mut_ptr() as *mut std::ffi::c_void) };
+        messenger.send(
+            window,
+            &AppMessage::QueryViewportExtents {
+                out_binding: &out_binding as *const ResponseBinding,
+            },
+        );
+        out_binding.wait();
 
-        let swapchain_images = unsafe {
-            vk_res
-                .swapchain_loader()
-                .get_swapchain_images(vk_res.swapchain())
-                .map_err(RendererError::VulkanInfoQueryFailed)?
-        };
-
-        for &img in &swapchain_images {
-            let img_view_info = vk::ImageViewCreateInfo {
-                image: img,
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: swapchain_img_format.format,
-                components: vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                },
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            let img_view = unsafe { vk_res.device().create_image_view(&img_view_info, None) }
-                .map_err(RendererError::FailedToCreateImageView)?;
-            unsafe {
-                vk_res.swapchain_image_views_mut().push(img_view);
-            }
-        }
+        let swapchain_img_extent = swapchain_info.select_extent(unsafe { extent.assume_init() });
+        let swapchain_img_format = swapchain_info.select_format().unwrap();
 
         unsafe {
             *vk_res.render_pass_mut() =
                 Self::create_render_pass(vk_res.device(), swapchain_img_format.format)?;
         }
+
+        vk_res.create_swapchain(&swapchain_info, swapchain_img_extent)?;
+
         unsafe {
             let (pipeline, pipeline_layout) = Self::create_graphics_pipeline(
                 vk_res.device(),
@@ -304,15 +278,6 @@ impl Renderer {
             )?;
             *vk_res.pipeline_mut() = pipeline_layout;
             *vk_res.pipeline_layout_mut() = pipeline;
-        }
-
-        unsafe {
-            *vk_res.framebuffers_mut() = Self::create_framebuffers(
-                vk_res.device(),
-                vk_res.render_pass(),
-                swapchain_img_extent,
-                vk_res.swapchain_image_views(),
-            )?;
         }
 
         let command_pool_info = vk::CommandPoolCreateInfo {
@@ -347,8 +312,6 @@ impl Renderer {
             vk_res,
             graphics_queue,
             present_queue,
-            swapchain_images,
-            swapchain_img_format,
             swapchain_img_extent,
             command_buffers,
             current_frame: 0,
@@ -593,78 +556,6 @@ impl Renderer {
 
         unsafe { instance.create_device(physical_device, &device_info, None) }
             .map_err(RendererError::FailedToCreateDevice)
-    }
-
-    fn create_swapchain(
-        win: WindowInstance,
-        messenger: &WindowMessenger,
-        swapchain_info: &swapchain_info::SwapchainSupportInfo,
-        surface: vk::SurfaceKHR,
-        queue_families: &queue::QueueFamilyIndices,
-        swapchain_loader: &khr::Swapchain,
-    ) -> Result<(vk::SwapchainKHR, vk::SurfaceFormatKHR, vk::Extent2D), RendererError> {
-        let surface_format = swapchain_info.select_format().unwrap();
-        let present_mode = swapchain_info.select_present_mode();
-
-        let mut extent = MaybeUninit::<crate::ffi::Extent2D>::uninit();
-        let out_binding =
-            unsafe { ResponseBinding::new(extent.as_mut_ptr() as *mut std::ffi::c_void) };
-        messenger.send(
-            win,
-            &AppMessage::QueryViewportExtents {
-                out_binding: &out_binding as *const ResponseBinding,
-            },
-        );
-        out_binding.wait();
-
-        let extent = unsafe { extent.assume_init() };
-        let crate::ffi::Extent2D { width, height } = extent;
-        log::debug!("Queried window extent: {width}, {height}");
-
-        let selected_extent = swapchain_info.select_extent(extent);
-
-        let image_count = swapchain_info.capabilities.min_image_count
-            + if swapchain_info.capabilities.min_image_count
-                != swapchain_info.capabilities.max_image_count
-            {
-                // If the number of images is not set in stone to be that one, we pick one more
-                1
-            } else {
-                // Otherwise we keep the required one, (add 0 does nothing)
-                0
-            };
-
-        let mut swapchain_create_info = vk::SwapchainCreateInfoKHR {
-            surface,
-            min_image_count: image_count,
-            image_format: surface_format.format,
-            image_color_space: surface_format.color_space,
-            image_extent: selected_extent,
-            image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            pre_transform: swapchain_info.capabilities.current_transform,
-            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-            present_mode,
-            clipped: vk::TRUE,
-            old_swapchain: vk::SwapchainKHR::null(),
-            ..Default::default()
-        };
-
-        let queue_family_indices = [
-            queue_families.graphics_family.unwrap(),
-            queue_families.present_family.unwrap(),
-        ];
-        if queue_families.graphics_family.unwrap() != queue_families.present_family.unwrap() {
-            swapchain_create_info.image_sharing_mode = vk::SharingMode::CONCURRENT;
-            swapchain_create_info.queue_family_index_count = 2;
-            swapchain_create_info.p_queue_family_indices = queue_family_indices.as_ptr();
-        } else {
-            swapchain_create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
-        }
-
-        unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None) }
-            .map(|swapchain| (swapchain, surface_format, selected_extent))
-            .map_err(RendererError::FailedToCreateSwapchain)
     }
 
     fn create_render_pass(
@@ -919,37 +810,6 @@ impl Renderer {
 
         unsafe { device.create_shader_module(&module_create_info, None) }
             .map_err(RendererError::FailedToCreateShaderModule)
-    }
-
-    fn create_framebuffers(
-        device: &ash::Device,
-        render_pass: vk::RenderPass,
-        extent: vk::Extent2D,
-        img_views: &[vk::ImageView],
-    ) -> Result<Vec<vk::Framebuffer>, RendererError> {
-        let mut result = Vec::new();
-        for img_view in img_views {
-            let framebuffer_info = vk::FramebufferCreateInfo {
-                render_pass,
-                attachment_count: 1,
-                p_attachments: img_view as *const _,
-                width: extent.width,
-                height: extent.height,
-                layers: 1,
-                ..Default::default()
-            };
-
-            let framebuffer = unsafe { device.create_framebuffer(&framebuffer_info, None) }
-                .map_err(|e| {
-                    for &fbuf in &result {
-                        unsafe { device.destroy_framebuffer(fbuf, None) };
-                    }
-                    RendererError::FailedToCreateFramebuffer(e)
-                })?;
-
-            result.push(framebuffer);
-        }
-        Ok(result)
     }
 
     fn record_command_buffer(

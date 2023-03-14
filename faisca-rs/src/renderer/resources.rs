@@ -1,6 +1,9 @@
 #![allow(unused)]
 
-use crate::renderer::RendererError;
+use crate::{
+    ffi,
+    renderer::{queue::QueueFamilyIndices, swapchain_info::SwapchainSupportInfo, RendererError},
+};
 use ash::{
     extensions::{ext, khr},
     vk,
@@ -14,11 +17,16 @@ pub struct RendererResourceKeeper {
     surface_loader: Option<khr::Surface>,
     surface: vk::SurfaceKHR,
 
+    physical_device: vk::PhysicalDevice,
+
+    queue_families: QueueFamilyIndices,
+
     device: Option<ash::Device>,
 
     swapchain_loader: Option<khr::Swapchain>,
     swapchain: vk::SwapchainKHR,
     swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_info: Option<SwapchainSupportInfo>,
 
     render_pass: vk::RenderPass,
 
@@ -90,6 +98,26 @@ impl RendererResourceKeeper {
     }
 
     #[inline]
+    pub fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
+
+    #[inline]
+    pub unsafe fn physical_device_mut(&mut self) -> &mut vk::PhysicalDevice {
+        &mut self.physical_device
+    }
+
+    #[inline]
+    pub fn queue_families(&self) -> &QueueFamilyIndices {
+        &self.queue_families
+    }
+
+    #[inline]
+    pub unsafe fn queue_families_mut(&mut self) -> &mut QueueFamilyIndices {
+        &mut self.queue_families
+    }
+
+    #[inline]
     pub fn device(&self) -> &ash::Device {
         self.device.as_ref().unwrap()
     }
@@ -117,6 +145,16 @@ impl RendererResourceKeeper {
     #[inline]
     pub unsafe fn swapchain_mut(&mut self) -> &mut vk::SwapchainKHR {
         &mut self.swapchain
+    }
+
+    #[inline]
+    pub fn swapchain_info(&self) -> &SwapchainSupportInfo {
+        self.swapchain_info.as_ref().unwrap()
+    }
+
+    #[inline]
+    pub fn swapchain_info_mut(&mut self) -> &mut SwapchainSupportInfo {
+        self.swapchain_info.as_mut().unwrap()
     }
 
     #[inline]
@@ -241,6 +279,155 @@ impl RendererResourceKeeper {
         Ok(())
     }
 
+    pub fn create_swapchain(
+        &mut self,
+        swapchain_info: &SwapchainSupportInfo,
+        window_extent: vk::Extent2D,
+    ) -> Result<(), RendererError> {
+        let surface_format = swapchain_info.select_format().unwrap();
+        let present_mode = swapchain_info.select_present_mode();
+
+        let selected_extent = swapchain_info.select_extent(window_extent);
+
+        let image_count = swapchain_info.capabilities.min_image_count
+            + if swapchain_info.capabilities.min_image_count
+                != swapchain_info.capabilities.max_image_count
+            {
+                // If the number of images is not set in stone to be that one, we pick one more
+                1
+            } else {
+                // Otherwise we keep the required one, (add 0 does nothing)
+                0
+            };
+
+        let mut swapchain_create_info = vk::SwapchainCreateInfoKHR {
+            surface: self.surface(),
+            min_image_count: image_count,
+            image_format: surface_format.format,
+            image_color_space: surface_format.color_space,
+            image_extent: selected_extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            pre_transform: swapchain_info.capabilities.current_transform,
+            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+            present_mode,
+            clipped: vk::TRUE,
+            old_swapchain: vk::SwapchainKHR::null(),
+            ..Default::default()
+        };
+
+        let queue_family_indices = [
+            self.queue_families().graphics_family.unwrap(),
+            self.queue_families().present_family.unwrap(),
+        ];
+        if self.queue_families().graphics_family.unwrap()
+            != self.queue_families().present_family.unwrap()
+        {
+            swapchain_create_info.image_sharing_mode = vk::SharingMode::CONCURRENT;
+            swapchain_create_info.queue_family_index_count = 2;
+            swapchain_create_info.p_queue_family_indices = queue_family_indices.as_ptr();
+        } else {
+            swapchain_create_info.image_sharing_mode = vk::SharingMode::EXCLUSIVE;
+        }
+
+        self.swapchain = unsafe {
+            self.swapchain_loader().create_swapchain(
+                &swapchain_create_info,
+                None,
+            )
+            .map_err(RendererError::FailedToCreateSwapchain)?
+        };
+
+        self.swapchain_info = Some(swapchain_info.clone());
+
+        self.create_image_views(surface_format)?;
+        self.create_framebuffers(selected_extent)?;
+
+        Ok(())
+    }
+
+    fn create_image_views(&mut self, swapchain_img_format: vk::SurfaceFormatKHR) -> Result<(), RendererError> {
+        let images = unsafe {
+            self.swapchain_loader()
+                .get_swapchain_images(self.swapchain())
+                .map_err(RendererError::FailedToCreateImageView)?
+        };
+
+        assert!(self.swapchain_image_views.is_empty());
+        for image in images {
+            let img_view_info = vk::ImageViewCreateInfo {
+                image,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format: swapchain_img_format.format,
+                components: vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                },
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+
+            let image_view = unsafe { self.device().create_image_view(
+                &img_view_info,
+                None,
+            )}
+            .map_err(RendererError::FailedToCreateImageView)?;
+
+            self.swapchain_image_views.push(image_view);
+        }
+
+        Ok(())
+    }
+
+    fn create_framebuffers(&mut self, extent: vk::Extent2D) -> Result<(), RendererError> {
+        assert!(self.framebuffers.is_empty());
+        for image_view in &self.swapchain_image_views {
+            let framebuffer_info = vk::FramebufferCreateInfo {
+                render_pass: self.render_pass(),
+                attachment_count: 1,
+                p_attachments: image_view as *const _,
+                width: extent.width,
+                height: extent.height,
+                layers: 1,
+                ..Default::default()
+            };
+
+            let framebuffer = unsafe {
+                self.device().create_framebuffer(&framebuffer_info, None)
+            }
+            .map_err(RendererError::FailedToCreateFramebuffer)?;
+
+            self.framebuffers.push(framebuffer);
+        }
+
+        Ok(())
+    }
+
+    pub fn destroy_swapchain(&mut self) {
+        log::debug!("Destroying Vulkan framebuffers");
+        for &fbuf in self.framebuffers.iter() {
+            unsafe { self.device().destroy_framebuffer(fbuf, None) };
+        }
+
+        log::debug!("Destroying Vulkan image views");
+        for &view in self.swapchain_image_views.iter() {
+            unsafe { self.device().destroy_image_view(view, None) };
+        }
+
+        if let Some(swapchain_loader) = &self.swapchain_loader {
+            log::debug!("Destroying Vulkan swapchain");
+            unsafe { swapchain_loader.destroy_swapchain(self.swapchain, None) };
+        }
+    }
+
     pub fn recreate_swapchain(&mut self) -> Result<(), RendererError> {
         unsafe { self.device().device_wait_idle() };
 
@@ -258,11 +445,15 @@ impl Default for RendererResourceKeeper {
             surface_loader: None,
             surface: vk::SurfaceKHR::null(),
 
+            physical_device: vk::PhysicalDevice::null(),
+            queue_families: QueueFamilyIndices::none(),
+
             device: None,
 
             swapchain_loader: None,
             swapchain: vk::SwapchainKHR::null(),
             swapchain_image_views: Vec::new(),
+            swapchain_info: None,
 
             render_pass: vk::RenderPass::null(),
 
@@ -281,8 +472,9 @@ impl Default for RendererResourceKeeper {
 }
 impl Drop for RendererResourceKeeper {
     fn drop(&mut self) {
-        if let Some(device) = &self.device {
-            unsafe { device.device_wait_idle() }.unwrap_or_else(|e| {
+        // if let Some(device) = &self.device {
+        if self.device.is_some() {
+            unsafe { self.device().device_wait_idle() }.unwrap_or_else(|e| {
                 log::error!("FATAL: Could not wait for device idle on Renderer destroying: {e}");
                 std::process::abort();
             });
@@ -293,43 +485,33 @@ impl Drop for RendererResourceKeeper {
                 .iter()
                 .chain(self.render_finished_semaphores.iter())
             {
-                unsafe { device.destroy_semaphore(sem, None) };
+                unsafe { self.device().destroy_semaphore(sem, None) };
             }
 
             log::debug!("Destroying Vulkan fences");
             for &fence in self.in_flight_fences.iter() {
-                unsafe { device.destroy_fence(fence, None) };
+                unsafe { self.device().destroy_fence(fence, None) };
             }
 
             log::debug!("Destroying Vulkan command pool");
-            unsafe { device.destroy_command_pool(self.command_pool, None) };
-
-            log::debug!("Destroying Vulkan framebuffers");
-            for &fbuf in self.framebuffers.iter() {
-                unsafe { device.destroy_framebuffer(fbuf, None) };
-            }
+            unsafe { self.device().destroy_command_pool(self.command_pool, None) };
 
             log::debug!("Destroying Vulkan pipeline");
-            unsafe { device.destroy_pipeline(self.pipeline, None) };
+            unsafe { self.device().destroy_pipeline(self.pipeline, None) };
 
             log::debug!("Destroying Vulkan pipeline layout");
-            unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
+            unsafe {
+                self.device()
+                    .destroy_pipeline_layout(self.pipeline_layout, None)
+            };
 
             log::debug!("Destroying Vulkan render pass");
-            unsafe { device.destroy_render_pass(self.render_pass, None) };
+            unsafe { self.device().destroy_render_pass(self.render_pass, None) };
 
-            log::debug!("Destroying Vulkan image views");
-            for &view in self.swapchain_image_views.iter() {
-                unsafe { device.destroy_image_view(view, None) };
-            }
-
-            if let Some(swapchain_loader) = &self.swapchain_loader {
-                log::debug!("Destroying Vulkan swapchain");
-                unsafe { swapchain_loader.destroy_swapchain(self.swapchain, None) };
-            }
+            self.destroy_swapchain();
 
             log::debug!("Destroying Vulkan device");
-            unsafe { device.destroy_device(None) };
+            unsafe { self.device().destroy_device(None) };
         }
 
         if let Some(surface_loader) = &self.surface_loader {

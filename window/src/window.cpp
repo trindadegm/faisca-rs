@@ -205,7 +205,7 @@ int main(int argc, char *argv[]) {
 
         {
             std::unique_lock<std::mutex> lk(gEventWaitMutex);
-            gEventWaitFence.wait_for(lk, 16ms, []{return gEventWaitFlag;});
+            gEventWaitFence.wait_for(lk, 8ms, []{return gEventWaitFlag;});
             gEventWaitFlag = false;
         }
     }
