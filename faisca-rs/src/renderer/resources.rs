@@ -334,11 +334,9 @@ impl RendererResourceKeeper {
         }
 
         self.swapchain = unsafe {
-            self.swapchain_loader().create_swapchain(
-                &swapchain_create_info,
-                None,
-            )
-            .map_err(RendererError::FailedToCreateSwapchain)?
+            self.swapchain_loader()
+                .create_swapchain(&swapchain_create_info, None)
+                .map_err(RendererError::FailedToCreateSwapchain)?
         };
 
         self.swapchain_info = Some(swapchain_info.clone());
@@ -351,7 +349,10 @@ impl RendererResourceKeeper {
         Ok(())
     }
 
-    fn create_image_views(&mut self, swapchain_img_format: vk::SurfaceFormatKHR) -> Result<(), RendererError> {
+    fn create_image_views(
+        &mut self,
+        swapchain_img_format: vk::SurfaceFormatKHR,
+    ) -> Result<(), RendererError> {
         let images = unsafe {
             self.swapchain_loader()
                 .get_swapchain_images(self.swapchain())
@@ -380,11 +381,8 @@ impl RendererResourceKeeper {
                 ..Default::default()
             };
 
-            let image_view = unsafe { self.device().create_image_view(
-                &img_view_info,
-                None,
-            )}
-            .map_err(RendererError::FailedToCreateImageView)?;
+            let image_view = unsafe { self.device().create_image_view(&img_view_info, None) }
+                .map_err(RendererError::FailedToCreateImageView)?;
 
             self.swapchain_image_views.push(image_view);
         }
@@ -405,10 +403,8 @@ impl RendererResourceKeeper {
                 ..Default::default()
             };
 
-            let framebuffer = unsafe {
-                self.device().create_framebuffer(&framebuffer_info, None)
-            }
-            .map_err(RendererError::FailedToCreateFramebuffer)?;
+            let framebuffer = unsafe { self.device().create_framebuffer(&framebuffer_info, None) }
+                .map_err(RendererError::FailedToCreateFramebuffer)?;
 
             self.framebuffers.push(framebuffer);
         }

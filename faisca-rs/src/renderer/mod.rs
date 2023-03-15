@@ -60,8 +60,18 @@ pub enum RendererError {
 mod queue;
 mod resources;
 mod swapchain_info;
+mod vertex;
 
 const MAX_CONCURRENT_FRAMES: usize = 2;
+
+use vertex::{Point2DColorRGBVertex, Vector2, Vector3};
+
+#[rustfmt::skip]
+static VERTICES: [Point2DColorRGBVertex; 3] = [
+    Point2DColorRGBVertex { point: Vector2([ 0.0, -0.5]), color: Vector3([ 1.0,  0.0,  0.0]) },
+    Point2DColorRGBVertex { point: Vector2([ 0.5,  0.5]), color: Vector3([ 0.0,  1.0,  0.0]) },
+    Point2DColorRGBVertex { point: Vector2([-0.5,  0.5]), color: Vector3([ 0.0,  0.0,  1.0]) },
+];
 
 pub struct Renderer {
     vk_res: RendererResourceKeeper,
@@ -1005,7 +1015,8 @@ impl Renderer {
         .map_err(RendererError::VulkanInfoQueryFailed)?;
 
         self.vk_res.destroy_swapchain();
-        self.vk_res.create_swapchain(&swapchain_info, vk::Extent2D { width, height })?;
+        self.vk_res
+            .create_swapchain(&swapchain_info, vk::Extent2D { width, height })?;
 
         self.swapchain_img_extent = swapchain_info.select_extent(vk::Extent2D { width, height });
 

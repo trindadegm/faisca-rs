@@ -1,4 +1,7 @@
-use faisca::{AppMessage, SafeCString, WindowEvent, WindowInstance, WindowMessenger, renderer::{Renderer, RendererError}};
+use faisca::{
+    renderer::{Renderer, RendererError},
+    AppMessage, SafeCString, WindowEvent, WindowInstance, WindowMessenger,
+};
 
 fn entry(w: WindowInstance, messenger: WindowMessenger) {
     env_logger::init();
@@ -19,10 +22,7 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
         },
     );
 
-    messenger.send(
-        w,
-        &AppMessage::SetWindowResizable(true),
-    );
+    messenger.send(w, &AppMessage::SetWindowResizable(true));
 
     let mut renderer = Renderer::new(w, &messenger).unwrap_or_else(|e| {
         log::error!("Failed to create renderer: {e}");
@@ -40,8 +40,7 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
                     log::debug!("Window resize event received: {w}, {h}");
                     win_extent_w = w;
                     win_extent_h = h;
-                    renderer.window_resized(win_extent_w, win_extent_h)
-                        .unwrap();
+                    renderer.window_resized(win_extent_w, win_extent_h).unwrap();
                 }
             }
         }
@@ -50,9 +49,8 @@ fn entry(w: WindowInstance, messenger: WindowMessenger) {
             Ok(()) => (),
             Err(RendererError::FailedToDrawFrame(faisca::vk::Result::ERROR_OUT_OF_DATE_KHR)) => {
                 log::warn!("OUT_OF_DATE_KHR error, skipping frame and resizing");
-                renderer.window_resized(win_extent_w, win_extent_h)
-                    .unwrap();
-            },
+                renderer.window_resized(win_extent_w, win_extent_h).unwrap();
+            }
             Err(e) => panic!("{e}"),
         }
     }
