@@ -23,6 +23,8 @@ pub enum RendererError {
     /// subset of those.
     #[error("The program requires some validation layers that are not available")]
     UnavailableValidationLayers(Box<[*const i8]>),
+    #[error("Failed to create Vulkan surface")]
+    FailedToCreateVulkanSurface,
     #[error("Failed to find a video adapter (GPU) supporting Vulkan")]
     NoAvailableVideoAdapter,
     #[error("Failed to find a video adapter (GPU) that this application supports")]
@@ -196,6 +198,9 @@ impl Renderer {
 
         unsafe {
             *vk_res.surface_mut() = vk::SurfaceKHR::from_raw(surface.assume_init());
+        }
+        if vk_res.surface() == vk::SurfaceKHR::null() {
+            return Err(RendererError::FailedToCreateVulkanSurface);
         }
 
         let selected_physical_device = Self::select_physical_device(
@@ -890,12 +895,14 @@ impl Renderer {
         let img_idx = unsafe {
             self.vk_res
                 .device()
+                // Wait for our fences
                 .wait_for_fences(&[in_flight_fence], false, u64::MAX)
                 .map_err(RendererError::FailedToDrawFrame)?;
 
             let (img_idx, _swapchain_suboptimal) = self
                 .vk_res
                 .swapchain_loader()
+                // Acquire a new image to render to
                 .acquire_next_image(
                     self.vk_res.swapchain(),
                     u64::MAX,
@@ -906,6 +913,7 @@ impl Renderer {
 
             self.vk_res
                 .device()
+                // Reset our command buffer in order to record our commands
                 .reset_command_buffer(
                     self.command_buffers[self.current_frame],
                     vk::CommandBufferResetFlags::empty(),
@@ -915,6 +923,7 @@ impl Renderer {
             img_idx
         };
 
+        // We call the our function that will record the command buffer
         self.record_command_buffer(
             self.command_buffers[self.current_frame],
             img_idx.try_into().unwrap(),
@@ -943,6 +952,7 @@ impl Renderer {
 
             self.vk_res
                 .device()
+                // Submit our commands to the graphics queue
                 .queue_submit(
                     self.graphics_queue,
                     &[submit_info],
