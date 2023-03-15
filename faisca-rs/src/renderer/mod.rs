@@ -184,6 +184,8 @@ impl Renderer {
 
         unsafe { *vk_res.debug_messenger_mut() = debug_messenger };
 
+        // Here we basically ask the Window for a SurfaceKHR handle. The window code
+        // will do something platform-specific in order to acquire this handle for us.
         let mut surface: MaybeUninit<u64> = MaybeUninit::uninit();
         let binding =
             unsafe { ResponseBinding::new(surface.as_mut_ptr() as *mut std::ffi::c_void) };
@@ -199,6 +201,8 @@ impl Renderer {
         unsafe {
             *vk_res.surface_mut() = vk::SurfaceKHR::from_raw(surface.assume_init());
         }
+        // It is possible that the handle creation fails, in which case we receive a
+        // null handle.
         if vk_res.surface() == vk::SurfaceKHR::null() {
             return Err(RendererError::FailedToCreateVulkanSurface);
         }
@@ -213,6 +217,9 @@ impl Renderer {
             *vk_res.physical_device_mut() = selected_physical_device;
         }
 
+        // With this, for some physical device, we store the queue indices for the
+        // queue falimies we want to use (graphics and present). They may have the
+        // same index (be the same family).
         let queue_indices = queue::QueueFamilyIndices::fetch(
             vk_res.instance(),
             vk_res.surface_loader(),
