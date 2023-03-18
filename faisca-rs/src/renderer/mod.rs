@@ -23,6 +23,7 @@ pub enum RendererError {
     /// subset of those.
     #[error("The program requires some validation layers that are not available")]
     UnavailableValidationLayers(Box<[*const i8]>),
+
     #[error("Failed to create Vulkan surface")]
     FailedToCreateVulkanSurface,
     #[error("Failed to find a video adapter (GPU) supporting Vulkan")]
@@ -53,6 +54,9 @@ pub enum RendererError {
     CommandBufferRecordingError(vk::Result),
     #[error("Failed to create Vulkan sync object, Vulkan error code: {0}")]
     FailedToCreateSyncObject(vk::Result),
+    #[error("Failed to create Vulkan buffer, Vulkan error code: {0}")]
+    FailedToCreateBuffer(vk::Result),
+
     #[error("Failed to draw Vulkan frame, Vulkan error code: {0}")]
     FailedToDrawFrame(vk::Result),
 }
@@ -701,8 +705,17 @@ impl Renderer {
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
-        // All 0 because for now there is no input
+        let vertex_layout = Point2DColorRGBVertex::layout();
+        let mut attr_descriptions = vec![Default::default(); vertex_layout.num_components()];
+        vertex_layout.vulkan_describe_vertex_attributes(0, attr_descriptions.as_mut());
+        let binding_description =
+            vertex_layout.vulkan_vertex_input_binding_description(0, vk::VertexInputRate::VERTEX);
+
         let vertex_input_stage_info = vk::PipelineVertexInputStateCreateInfo {
+            vertex_binding_description_count: 1,
+            p_vertex_binding_descriptions: &binding_description as *const _,
+            vertex_attribute_description_count: attr_descriptions.len().try_into().unwrap(),
+            p_vertex_attribute_descriptions: attr_descriptions.as_ptr(),
             ..Default::default()
         };
 

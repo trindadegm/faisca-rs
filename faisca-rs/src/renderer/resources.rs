@@ -40,6 +40,8 @@ pub struct RendererResourceKeeper {
     img_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+
+    buffers: Vec<vk::Buffer>,
 }
 
 impl RendererResourceKeeper {
@@ -431,10 +433,26 @@ impl RendererResourceKeeper {
         }
     }
 
-    pub fn recreate_swapchain(&mut self) -> Result<(), RendererError> {
-        unsafe { self.device().device_wait_idle() };
+    pub fn create_vertex_buffer(&mut self, vertex_data: &[u8]) -> Result<(), RendererError> {
+        let size = vertex_data.len().try_into().unwrap();
 
-        // unsafe { self.destroy_swapchain() };
+        let buffer_info = vk::BufferCreateInfo {
+            size,
+            usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let buffer = unsafe {
+            self.device()
+                .create_buffer(&buffer_info, None)
+                .map_err(RendererError::FailedToCreateBuffer)?
+        };
+
+        self.buffers.push(buffer);
+
+        // vk::MemoryPropertyFlags::HOST_COHERENT;
+
         Ok(())
     }
 }
@@ -470,6 +488,8 @@ impl Default for RendererResourceKeeper {
             img_available_semaphores: Vec::new(),
             render_finished_semaphores: Vec::new(),
             in_flight_fences: Vec::new(),
+
+            buffers: Vec::new(),
         }
     }
 }
@@ -512,6 +532,11 @@ impl Drop for RendererResourceKeeper {
             unsafe { self.device().destroy_render_pass(self.render_pass, None) };
 
             self.destroy_swapchain();
+
+            log::debug!("Destroying {n} Vulkan buffers", n = self.buffers.len());
+            for &buffer in &self.buffers {
+                unsafe { self.device().destroy_buffer(buffer, None) };
+            }
 
             log::debug!("Destroying Vulkan device");
             unsafe { self.device().destroy_device(None) };
