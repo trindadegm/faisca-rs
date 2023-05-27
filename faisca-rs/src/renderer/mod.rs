@@ -1,7 +1,7 @@
 use crate::{ffi::ResponseBinding, util::OnDropDefer, AppMessage, WindowInstance, WindowMessenger};
 use ash::{
     extensions::{ext, khr},
-    vk::{self, Handle},
+    vk::{self, Handle, MemoryPropertyFlags},
 };
 use std::{ffi::CStr, mem::MaybeUninit};
 
@@ -56,6 +56,17 @@ pub enum RendererError {
     FailedToCreateSyncObject(vk::Result),
     #[error("Failed to create Vulkan buffer, Vulkan error code: {0}")]
     FailedToCreateBuffer(vk::Result),
+    #[error(
+        "Failed to find suitable memory type: {memory_type_flags:x}, {memory_property_flags:?}"
+    )]
+    UnavailableMemoryType {
+        memory_type_flags: u32,
+        memory_property_flags: MemoryPropertyFlags,
+    },
+    #[error("Failed to allocate memory, Vulkan error code: {0}")]
+    MemAllocError(vk::Result),
+    #[error("Failed to map memory to buffer, Vulkan error code: {0}")]
+    FailedToMapBufferMemory(vk::Result),
 
     #[error("Failed to draw Vulkan frame, Vulkan error code: {0}")]
     FailedToDrawFrame(vk::Result),
@@ -332,6 +343,16 @@ impl Renderer {
         .map_err(RendererError::FailedToCreateCommandBuffer)?;
 
         unsafe { vk_res.create_sync_objects(MAX_CONCURRENT_FRAMES)? };
+
+        let vertex_data_len = VERTICES
+            .len()
+            .checked_mul(std::mem::size_of::<Point2DColorRGBVertex>())
+            .unwrap();
+        unsafe {
+            let vertex_data =
+                std::slice::from_raw_parts(VERTICES.as_ptr() as *const u8, vertex_data_len);
+            let _buf = vk_res.create_vertex_buffer(vertex_data)?;
+        }
 
         Ok(Renderer {
             entry,
@@ -904,11 +925,20 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.vk_res.pipeline(),
             );
+            let buffers = [self.vk_res.buffers()[0]];
+            self.vk_res.device().cmd_bind_vertex_buffers(
+                cmdbuf,
+                0,
+                &buffers,
+                &vec![0; buffers.len()],
+            );
             self.vk_res
                 .device()
                 .cmd_set_viewport(cmdbuf, 0, &[viewport]);
             self.vk_res.device().cmd_set_scissor(cmdbuf, 0, &[scissor]);
-            self.vk_res.device().cmd_draw(cmdbuf, 3, 1, 0, 0);
+            self.vk_res
+                .device()
+                .cmd_draw(cmdbuf, VERTICES.len().try_into().unwrap(), 1, 0, 0);
 
             self.vk_res.device().cmd_end_render_pass(cmdbuf);
 

@@ -71,7 +71,7 @@ impl VertexLayout {
     #[inline(always)]
     pub fn add_component<T: VertexComponent>(&mut self) {
         self.components.push(T::id());
-        self.size
+        self.size = self.size
             .checked_add(T::id().vk_data().1)
             .expect("Vertex too big");
     }
@@ -103,14 +103,14 @@ impl VertexLayout {
         for (index, &component) in self.components.iter().enumerate() {
             let (format, length) = component.vk_data();
 
-            offset = offset.checked_add(length).expect("Vertex is too big");
-
             out[index] = vk::VertexInputAttributeDescription {
                 binding,
                 location: index.try_into().expect("Too many components"),
                 format,
                 offset,
             };
+
+            offset = offset.checked_add(length).expect("Vertex is too big");
         }
     }
 }

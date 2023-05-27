@@ -42,6 +42,7 @@ pub struct RendererResourceKeeper {
     in_flight_fences: Vec<vk::Fence>,
 
     buffers: Vec<vk::Buffer>,
+    buffer_memory_handles: Vec<vk::DeviceMemory>,
 }
 
 impl RendererResourceKeeper {
@@ -249,6 +250,16 @@ impl RendererResourceKeeper {
         &mut self.in_flight_fences
     }
 
+    #[inline]
+    pub fn buffers(&self) -> &[vk::Buffer] {
+        &self.buffers
+    }
+
+    #[inline]
+    pub unsafe fn buffers_mut(&mut self) -> &mut Vec<vk::Buffer> {
+        &mut self.buffers
+    }
+
     pub unsafe fn create_sync_objects(&mut self, count: usize) -> Result<(), RendererError> {
         self.img_available_semaphores.reserve(count);
         self.render_finished_semaphores.reserve(count);
@@ -433,7 +444,7 @@ impl RendererResourceKeeper {
         }
     }
 
-    pub fn create_vertex_buffer(&mut self, vertex_data: &[u8]) -> Result<(), RendererError> {
+    pub unsafe fn create_vertex_buffer(&mut self, vertex_data: &[u8]) -> Result<vk::Buffer, RendererError> {
         let size = vertex_data.len().try_into().unwrap();
 
         let buffer_info = vk::BufferCreateInfo {
@@ -451,9 +462,78 @@ impl RendererResourceKeeper {
 
         self.buffers.push(buffer);
 
-        // vk::MemoryPropertyFlags::HOST_COHERENT;
+        let mem_requirements = unsafe { self.device().get_buffer_memory_requirements(buffer) };
 
-        Ok(())
+        let memory_alloc_info = vk::MemoryAllocateInfo {
+            allocation_size: mem_requirements.size,
+            memory_type_index: self.find_memory_type(
+                mem_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?,
+            ..Default::default()
+        };
+
+        let buffer_memory = unsafe {
+            self.device()
+                .allocate_memory(&memory_alloc_info, None)
+                .map_err(RendererError::MemAllocError)?
+        };
+
+        self.buffer_memory_handles.push(buffer_memory);
+
+        unsafe {
+            self.device()
+                .bind_buffer_memory(buffer, buffer_memory, 0)
+                .map_err(RendererError::FailedToMapBufferMemory)?;
+        }
+
+        unsafe {
+            let mapped_mem = self
+                .device()
+                .map_memory(
+                    buffer_memory,
+                    0,
+                    buffer_info.size,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .map_err(RendererError::FailedToMapBufferMemory)?;
+
+            // The copy operation!
+            std::ptr::copy(
+                vertex_data.as_ptr(),
+                mapped_mem as *mut u8,
+                buffer_info.size.try_into().unwrap(),
+            );
+
+            self.device().unmap_memory(buffer_memory);
+        }
+
+        Ok(buffer)
+    }
+
+    fn find_memory_type(
+        &mut self,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> Result<u32, RendererError> {
+        let mem_properties = unsafe {
+            self.instance()
+                .get_physical_device_memory_properties(self.physical_device())
+        };
+
+        for i in 0..mem_properties.memory_type_count {
+            let index: usize = i.try_into().unwrap();
+            if ((type_filter & (1 << i)) != 0)
+                && (mem_properties.memory_types[index].property_flags & properties) == properties
+            {
+                return Ok(i);
+            }
+        }
+
+        return Err(RendererError::UnavailableMemoryType {
+            memory_type_flags: type_filter,
+            memory_property_flags: properties,
+        });
     }
 }
 impl Default for RendererResourceKeeper {
@@ -490,6 +570,7 @@ impl Default for RendererResourceKeeper {
             in_flight_fences: Vec::new(),
 
             buffers: Vec::new(),
+            buffer_memory_handles: Vec::new(),
         }
     }
 }
@@ -536,6 +617,13 @@ impl Drop for RendererResourceKeeper {
             log::debug!("Destroying {n} Vulkan buffers", n = self.buffers.len());
             for &buffer in &self.buffers {
                 unsafe { self.device().destroy_buffer(buffer, None) };
+            }
+            log::debug!(
+                "Freeing {n} Vulkan memory allocations",
+                n = self.buffers.len()
+            );
+            for &memory_handle in &self.buffer_memory_handles {
+                unsafe { self.device().free_memory(memory_handle, None) };
             }
 
             log::debug!("Destroying Vulkan device");
