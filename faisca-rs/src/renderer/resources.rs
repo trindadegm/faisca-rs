@@ -2,12 +2,19 @@
 
 use crate::{
     ffi,
-    renderer::{queue::QueueFamilyIndices, swapchain_info::SwapchainSupportInfo, RendererError},
+    renderer::{
+        buffer::{BufferManager, VirtualBuffer},
+        queue::QueueFamilyIndices,
+        swapchain_info::SwapchainSupportInfo,
+        RendererError,
+    },
+    util::OnDropDefer,
 };
 use ash::{
     extensions::{ext, khr},
     vk,
 };
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 pub struct RendererResourceKeeper {
     instance: Option<ash::Instance>,
@@ -41,8 +48,7 @@ pub struct RendererResourceKeeper {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
 
-    buffers: Vec<vk::Buffer>,
-    buffer_memory_handles: Vec<vk::DeviceMemory>,
+    buffer_manager: RefCell<BufferManager>,
 }
 
 impl RendererResourceKeeper {
@@ -250,16 +256,6 @@ impl RendererResourceKeeper {
         &mut self.in_flight_fences
     }
 
-    #[inline]
-    pub fn buffers(&self) -> &[vk::Buffer] {
-        &self.buffers
-    }
-
-    #[inline]
-    pub unsafe fn buffers_mut(&mut self) -> &mut Vec<vk::Buffer> {
-        &mut self.buffers
-    }
-
     pub unsafe fn create_sync_objects(&mut self, count: usize) -> Result<(), RendererError> {
         self.img_available_semaphores.reserve(count);
         self.render_finished_semaphores.reserve(count);
@@ -444,96 +440,17 @@ impl RendererResourceKeeper {
         }
     }
 
-    pub unsafe fn create_vertex_buffer(&mut self, vertex_data: &[u8]) -> Result<vk::Buffer, RendererError> {
-        let size = vertex_data.len().try_into().unwrap();
-
-        let buffer_info = vk::BufferCreateInfo {
-            size,
-            usage: vk::BufferUsageFlags::VERTEX_BUFFER,
-            sharing_mode: vk::SharingMode::EXCLUSIVE,
-            ..Default::default()
-        };
-
-        let buffer = unsafe {
-            self.device()
-                .create_buffer(&buffer_info, None)
-                .map_err(RendererError::FailedToCreateBuffer)?
-        };
-
-        self.buffers.push(buffer);
-
-        let mem_requirements = unsafe { self.device().get_buffer_memory_requirements(buffer) };
-
-        let memory_alloc_info = vk::MemoryAllocateInfo {
-            allocation_size: mem_requirements.size,
-            memory_type_index: self.find_memory_type(
-                mem_requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            )?,
-            ..Default::default()
-        };
-
-        let buffer_memory = unsafe {
-            self.device()
-                .allocate_memory(&memory_alloc_info, None)
-                .map_err(RendererError::MemAllocError)?
-        };
-
-        self.buffer_memory_handles.push(buffer_memory);
-
-        unsafe {
-            self.device()
-                .bind_buffer_memory(buffer, buffer_memory, 0)
-                .map_err(RendererError::FailedToMapBufferMemory)?;
-        }
-
-        unsafe {
-            let mapped_mem = self
-                .device()
-                .map_memory(
-                    buffer_memory,
-                    0,
-                    buffer_info.size,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .map_err(RendererError::FailedToMapBufferMemory)?;
-
-            // The copy operation!
-            std::ptr::copy(
-                vertex_data.as_ptr(),
-                mapped_mem as *mut u8,
-                buffer_info.size.try_into().unwrap(),
-            );
-
-            self.device().unmap_memory(buffer_memory);
-        }
-
-        Ok(buffer)
-    }
-
-    fn find_memory_type(
+    pub unsafe fn create_vertex_vbuffer(
         &mut self,
-        type_filter: u32,
-        properties: vk::MemoryPropertyFlags,
-    ) -> Result<u32, RendererError> {
-        let mem_properties = unsafe {
-            self.instance()
-                .get_physical_device_memory_properties(self.physical_device())
-        };
+        vertex_data: &[u8],
+    ) -> Result<VirtualBuffer, RendererError> {
+        let mut buffer_manager = self.buffer_manager.borrow_mut();
+        let vbuffer =
+            buffer_manager.alloc_vertex_vbuffer(self, vertex_data.len().try_into().unwrap())?;
 
-        for i in 0..mem_properties.memory_type_count {
-            let index: usize = i.try_into().unwrap();
-            if ((type_filter & (1 << i)) != 0)
-                && (mem_properties.memory_types[index].property_flags & properties) == properties
-            {
-                return Ok(i);
-            }
-        }
+        buffer_manager.direct_upload(self, &vbuffer, vertex_data)?;
 
-        return Err(RendererError::UnavailableMemoryType {
-            memory_type_flags: type_filter,
-            memory_property_flags: properties,
-        });
+        Ok(vbuffer)
     }
 }
 impl Default for RendererResourceKeeper {
@@ -569,8 +486,7 @@ impl Default for RendererResourceKeeper {
             render_finished_semaphores: Vec::new(),
             in_flight_fences: Vec::new(),
 
-            buffers: Vec::new(),
-            buffer_memory_handles: Vec::new(),
+            buffer_manager: RefCell::new(BufferManager::new()),
         }
     }
 }
@@ -614,17 +530,9 @@ impl Drop for RendererResourceKeeper {
 
             self.destroy_swapchain();
 
-            log::debug!("Destroying {n} Vulkan buffers", n = self.buffers.len());
-            for &buffer in &self.buffers {
-                unsafe { self.device().destroy_buffer(buffer, None) };
-            }
-            log::debug!(
-                "Freeing {n} Vulkan memory allocations",
-                n = self.buffers.len()
-            );
-            for &memory_handle in &self.buffer_memory_handles {
-                unsafe { self.device().free_memory(memory_handle, None) };
-            }
+            log::debug!("Destroying Vulkan buffers");
+            let mut buffer_manager = self.buffer_manager.take();
+            unsafe { buffer_manager.destroy(self.device_mut().as_mut().unwrap()) };
 
             log::debug!("Destroying Vulkan device");
             unsafe { self.device().destroy_device(None) };

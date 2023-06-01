@@ -5,7 +5,7 @@ use ash::{
 };
 use std::{ffi::CStr, mem::MaybeUninit};
 
-use self::resources::RendererResourceKeeper;
+use self::{buffer::VirtualBuffer, resources::RendererResourceKeeper};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RendererError {
@@ -67,11 +67,14 @@ pub enum RendererError {
     MemAllocError(vk::Result),
     #[error("Failed to map memory to buffer, Vulkan error code: {0}")]
     FailedToMapBufferMemory(vk::Result),
+    #[error("The object could not be accepted or created because it was too big")]
+    ObjectTooBig,
 
     #[error("Failed to draw Vulkan frame, Vulkan error code: {0}")]
     FailedToDrawFrame(vk::Result),
 }
 
+mod buffer;
 mod queue;
 mod resources;
 mod swapchain_info;
@@ -83,7 +86,7 @@ use vertex::{Point2DColorRGBVertex, Vector2, Vector3};
 
 #[rustfmt::skip]
 static VERTICES: [Point2DColorRGBVertex; 3] = [
-    Point2DColorRGBVertex { point: Vector2([ 0.0, -0.5]), color: Vector3([ 1.0,  0.0,  0.0]) },
+    Point2DColorRGBVertex { point: Vector2([ 0.0, -0.5]), color: Vector3([ 1.0,  1.0,  1.0]) },
     Point2DColorRGBVertex { point: Vector2([ 0.5,  0.5]), color: Vector3([ 0.0,  1.0,  0.0]) },
     Point2DColorRGBVertex { point: Vector2([-0.5,  0.5]), color: Vector3([ 0.0,  0.0,  1.0]) },
 ];
@@ -97,6 +100,8 @@ pub struct Renderer {
     swapchain_img_extent: vk::Extent2D,
     command_buffers: Vec<vk::CommandBuffer>,
     current_frame: usize,
+
+    test_vertex_buffer: VirtualBuffer,
 }
 
 impl Renderer {
@@ -348,11 +353,11 @@ impl Renderer {
             .len()
             .checked_mul(std::mem::size_of::<Point2DColorRGBVertex>())
             .unwrap();
-        unsafe {
+        let test_vertex_buffer = unsafe {
             let vertex_data =
                 std::slice::from_raw_parts(VERTICES.as_ptr() as *const u8, vertex_data_len);
-            let _buf = vk_res.create_vertex_buffer(vertex_data)?;
-        }
+            vk_res.create_vertex_vbuffer(vertex_data)?
+        };
 
         Ok(Renderer {
             entry,
@@ -362,6 +367,8 @@ impl Renderer {
             swapchain_img_extent,
             command_buffers,
             current_frame: 0,
+
+            test_vertex_buffer,
         })
     }
 
@@ -925,12 +932,12 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.vk_res.pipeline(),
             );
-            let buffers = [self.vk_res.buffers()[0]];
+            let buffers = [self.test_vertex_buffer.buffer_handle];
             self.vk_res.device().cmd_bind_vertex_buffers(
                 cmdbuf,
                 0,
                 &buffers,
-                &vec![0; buffers.len()],
+                &[self.test_vertex_buffer.offset],
             );
             self.vk_res
                 .device()
