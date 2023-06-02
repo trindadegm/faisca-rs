@@ -16,6 +16,8 @@ use ash::{
 };
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
+const STAGING_BUFFER_SIZE: vk::DeviceSize = 16 * 1024 * 1024;
+
 pub struct RendererResourceKeeper {
     instance: Option<ash::Instance>,
     debug_loader: Option<ext::DebugUtils>,
@@ -49,6 +51,7 @@ pub struct RendererResourceKeeper {
     in_flight_fences: Vec<vk::Fence>,
 
     buffer_manager: RefCell<BufferManager>,
+    staging_buf: Option<VirtualBuffer>,
 }
 
 impl RendererResourceKeeper {
@@ -444,11 +447,74 @@ impl RendererResourceKeeper {
         &mut self,
         vertex_data: &[u8],
     ) -> Result<VirtualBuffer, RendererError> {
+        let data_size: vk::DeviceSize = vertex_data.len().try_into().unwrap();
+        if data_size > STAGING_BUFFER_SIZE {
+            return Err(RendererError::ObjectTooBig)
+        }
+
         let mut buffer_manager = self.buffer_manager.borrow_mut();
+
+        let staging_buf = self.staging_buf
+            .map_or_else(|| {
+                buffer_manager.alloc_staging_vbuffer(self, STAGING_BUFFER_SIZE)
+            }, Ok)?;
+        if self.staging_buf.is_none() {
+            self.staging_buf = Some(staging_buf);
+        }
+
+        buffer_manager.direct_upload(self, &staging_buf, vertex_data)?;
+
         let vbuffer =
             buffer_manager.alloc_vertex_vbuffer(self, vertex_data.len().try_into().unwrap())?;
 
-        buffer_manager.direct_upload(self, &vbuffer, vertex_data)?;
+        // Let us do a transfer op
+        let graphics_queue = self
+            .device()
+            .get_device_queue(self.queue_families().graphics_family.unwrap(), 0);
+
+        let cmd_buf_info = vk::CommandBufferAllocateInfo {
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_pool: self.command_pool(),
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+
+        let cmd_buf_alloc = self.device().allocate_command_buffers(&cmd_buf_info)
+            .map_err(RendererError::FailedToCreateCommandBuffer)?;
+        let cmd_buf = cmd_buf_alloc[0];
+
+        let cmd_buf_defer = OnDropDefer::new(cmd_buf, |cb| {
+            self.device().free_command_buffers(self.command_pool(), &[cb]);
+        });
+
+        let cmd_buf_begin_info = vk::CommandBufferBeginInfo {
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+
+        self.device().begin_command_buffer(cmd_buf, &cmd_buf_begin_info)
+            .map_err(RendererError::FailedToCreateCommandBuffer)?;
+
+        let copy_region = vk::BufferCopy {
+            src_offset: staging_buf.offset,
+            dst_offset: vbuffer.offset,
+            size: data_size,
+        };
+
+        self.device().cmd_copy_buffer(cmd_buf, staging_buf.buffer_handle, vbuffer.buffer_handle, &[copy_region]);
+
+        self.device().end_command_buffer(cmd_buf)
+            .map_err(RendererError::FailedToCreateCommandBuffer)?;
+
+        let submit_info = vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: cmd_buf_alloc.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device().queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
+            .map_err(RendererError::FailedToCreateCommandBuffer)?;
+        self.device().queue_wait_idle(graphics_queue);
 
         Ok(vbuffer)
     }
@@ -487,6 +553,7 @@ impl Default for RendererResourceKeeper {
             in_flight_fences: Vec::new(),
 
             buffer_manager: RefCell::new(BufferManager::new()),
+            staging_buf: None,
         }
     }
 }

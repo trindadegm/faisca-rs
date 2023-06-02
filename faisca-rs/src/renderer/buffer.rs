@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{renderer::RendererError, util::OnDropDefer};
 use ash::vk;
 
@@ -22,8 +24,9 @@ struct BufferRecord {
     size: vk::DeviceSize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BufferType {
+    Staging,
     Vertex,
 }
 
@@ -36,12 +39,17 @@ pub struct VirtualBuffer {
     pub offset: vk::DeviceSize,
 }
 
+struct SpecificBufferManager {
+    buffers: Vec<BufferRecord>,
+    buffer_mem_properties: Vec<vk::MemoryRequirements>,
+    buffer_tables: Vec<BufferAllocTable>,
+    buffer_default_size: vk::DeviceSize,
+}
+
 pub struct BufferManager {
     allocs: Vec<AllocRecord>,
-    vertex_buffers: Vec<BufferRecord>,
-    vertex_buffer_mem_properties: Vec<vk::MemoryRequirements>,
-    vertex_buffer_tables: Vec<BufferAllocTable>,
-    vertex_buffer_default_size: vk::DeviceSize,
+
+    specific_managers: HashMap<BufferType, SpecificBufferManager>,
 }
 
 struct BufferAllocTable {
@@ -64,11 +72,17 @@ impl BufferManager {
     pub fn new() -> Self {
         Self {
             allocs: Vec::new(),
-            vertex_buffers: Vec::new(),
-            vertex_buffer_mem_properties: Vec::new(),
-            vertex_buffer_tables: Vec::new(),
-            vertex_buffer_default_size: DEFAULT_VERTEX_BUFFER_SIZE,
+
+            specific_managers: HashMap::default(),
         }
+    }
+
+    pub unsafe fn alloc_staging_vbuffer(
+        &mut self,
+        vk_res: &RendererResourceKeeper,
+        vbuffer_size: vk::DeviceSize,
+    ) -> Result<VirtualBuffer, RendererError> {
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Staging)
     }
 
     pub unsafe fn alloc_vertex_vbuffer(
@@ -76,19 +90,43 @@ impl BufferManager {
         vk_res: &RendererResourceKeeper,
         vbuffer_size: vk::DeviceSize,
     ) -> Result<VirtualBuffer, RendererError> {
-        self.vertex_buffer_tables
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Vertex)
+    }
+
+    unsafe fn alloc_vbuffer(
+        &mut self,
+        vk_res: &RendererResourceKeeper,
+        vbuffer_size: vk::DeviceSize,
+        buffer_type: BufferType,
+    ) -> Result<VirtualBuffer, RendererError> {
+        let sm = self
+            .specific_managers
+            .entry(buffer_type)
+            .or_insert(SpecificBufferManager {
+                buffers: Vec::new(),
+                buffer_mem_properties: Vec::new(),
+                buffer_tables: Vec::new(),
+                buffer_default_size: DEFAULT_VERTEX_BUFFER_SIZE,
+            });
+
+        sm.buffer_tables
             .iter_mut()
             .enumerate()
             .find_map(|(index, table)| table.try_fit(vbuffer_size).map(|o| (index, o)))
             .map_or_else(
                 || {
-                    let index =
-                        self.create_new_vertex_buffer(vk_res, self.vertex_buffer_default_size)?;
-                    self.vertex_buffer_tables.push(BufferAllocTable::new(
-                        self.vertex_buffers[index].size,
-                        self.vertex_buffer_mem_properties[index].alignment,
+                    let index = Self::create_new_buffer(
+                        sm,
+                        &mut self.allocs,
+                        vk_res,
+                        sm.buffer_default_size,
+                        buffer_type,
+                    )?;
+                    sm.buffer_tables.push(BufferAllocTable::new(
+                        sm.buffers[index].size,
+                        sm.buffer_mem_properties[index].alignment,
                     ));
-                    self.vertex_buffer_tables[index]
+                    sm.buffer_tables[index]
                         .try_fit(vbuffer_size)
                         .ok_or_else(|| RendererError::ObjectTooBig)
                         .map(|offset| (index, offset))
@@ -97,18 +135,20 @@ impl BufferManager {
             )
             .map(|(index, offset)| VirtualBuffer {
                 buffer_idx: index,
-                buffer_type: BufferType::Vertex,
+                buffer_type,
                 size: vbuffer_size,
-                buffer_handle: self.vertex_buffers[index].handle,
+                buffer_handle: sm.buffers[index].handle,
                 offset,
             })
     }
 
     /// Returns the created buffer index
-    unsafe fn create_new_vertex_buffer(
-        &mut self,
+    unsafe fn create_new_buffer(
+        sm: &mut SpecificBufferManager,
+        allocs: &mut Vec<AllocRecord>,
         vk_res: &RendererResourceKeeper,
         size: vk::DeviceSize,
+        buffer_type: BufferType,
     ) -> Result<usize, RendererError> {
         let instance = vk_res.instance();
         let device = vk_res.device();
@@ -116,7 +156,7 @@ impl BufferManager {
 
         let buffer_info = vk::BufferCreateInfo {
             size,
-            usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+            usage: Self::buffer_type_usage(buffer_type),
             sharing_mode: vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
@@ -129,12 +169,11 @@ impl BufferManager {
             device.destroy_buffer(b, None);
         });
 
-        let buffer_idx = self.vertex_buffers.len();
+        let buffer_idx = sm.buffers.len();
 
         let buffer_mem_requirements = device.get_buffer_memory_requirements(buffer);
         let memory_properties = instance.get_physical_device_memory_properties(physical_device);
-        let memory_property_flags =
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let memory_property_flags = Self::buffer_type_mem_props(buffer_type);
 
         let memory_type_index = Self::find_memory_type(
             memory_properties,
@@ -165,23 +204,40 @@ impl BufferManager {
             .bind_buffer_memory(buffer, device_memory, 0)
             .map_err(RendererError::FailedToCreateBuffer)?;
 
-        let alloc_idx = self.allocs.len();
+        let alloc_idx = allocs.len();
 
-        self.vertex_buffers.push(BufferRecord {
+        sm.buffers.push(BufferRecord {
             handle: buffer_defer.take(),
             alloc_idx: 0,
             size,
         });
-        self.allocs.push(AllocRecord {
+        allocs.push(AllocRecord {
             handle: device_memory_defer.take(),
             size,
         });
-        self.vertex_buffer_mem_properties
-            .push(buffer_mem_requirements);
+        sm.buffer_mem_properties.push(buffer_mem_requirements);
 
-        self.vertex_buffers[buffer_idx].alloc_idx = alloc_idx;
+        sm.buffers[buffer_idx].alloc_idx = alloc_idx;
 
         Ok(buffer_idx)
+    }
+
+    fn buffer_type_usage(buffer_type: BufferType) -> vk::BufferUsageFlags {
+        match buffer_type {
+            BufferType::Vertex => {
+                vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
+            }
+            BufferType::Staging => vk::BufferUsageFlags::TRANSFER_SRC,
+        }
+    }
+
+    fn buffer_type_mem_props(buffer_type: BufferType) -> vk::MemoryPropertyFlags {
+        match buffer_type {
+            BufferType::Vertex => vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            BufferType::Staging => {
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+            }
+        }
     }
 
     fn find_memory_type(
@@ -237,10 +293,10 @@ impl BufferManager {
     }
 
     fn get_underlying_alloc_idx(&self, vbuffer: &VirtualBuffer) -> usize {
-        use BufferType::*;
-        match vbuffer.buffer_type {
-            Vertex => self.vertex_buffers[vbuffer.buffer_idx].alloc_idx,
-        }
+        self.specific_managers
+            .get(&vbuffer.buffer_type)
+            .map(|sm| sm.buffers[vbuffer.buffer_idx].alloc_idx)
+            .unwrap()
     }
 
     /// Destroy all the buffers and frees all of the memory.
@@ -249,12 +305,11 @@ impl BufferManager {
     /// Make sure the resources are not in use and that they were created with
     /// the same device.
     pub unsafe fn destroy(&mut self, device: &mut ash::Device) {
-        log::debug!(
-            "Destroying {n} Vulkan buffers",
-            n = self.vertex_buffers.len()
-        );
-        for buffer in self.vertex_buffers.drain(..) {
-            device.destroy_buffer(buffer.handle, None);
+        for sm in self.specific_managers.values_mut() {
+            log::debug!("Destroying {n} Vulkan buffers", n = sm.buffers.len());
+            for buffer in sm.buffers.drain(..) {
+                device.destroy_buffer(buffer.handle, None);
+            }
         }
 
         log::debug!(
