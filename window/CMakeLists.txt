@@ -13,9 +13,15 @@ set(FAISCA_SOURCES
     src/dylib_load.cpp
 )
 
+set(WINDOW_APP_INCLUDE_DIRECTORIES
+    "include"
+    SDL2/include
+    VulkanHeaders/include
+)
+
 add_executable(Window ${FAISCA_SOURCES})
 
 set_property(TARGET Window PROPERTY CXX_STANDARD_REQUIRED 17)
 
-target_include_directories(Window PUBLIC include SDL2/include VulkanHeaders/include)
+target_include_directories(Window PUBLIC ${WINDOW_APP_INCLUDE_DIRECTORIES})
 target_link_libraries(Window PUBLIC SDL2 SDL2main)

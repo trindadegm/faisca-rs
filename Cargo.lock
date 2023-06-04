@@ -86,6 +86,7 @@ name = "faisca"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "cfg-if",
  "env_logger",
  "log",
  "thiserror",

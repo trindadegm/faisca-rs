@@ -14,6 +14,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 ash = "0.37"
+cfg-if = "1"
 log = "0.4"
 thiserror = "1.0"
 

@@ -85,10 +85,11 @@ const MAX_CONCURRENT_FRAMES: usize = 2;
 use vertex::{Point2DColorRGBVertex, Vector2, Vector3};
 
 #[rustfmt::skip]
-static VERTICES: [Point2DColorRGBVertex; 3] = [
-    Point2DColorRGBVertex { point: Vector2([ 0.0, -0.5]), color: Vector3([ 1.0,  1.0,  1.0]) },
+static VERTICES: [Point2DColorRGBVertex; 4] = [
+    Point2DColorRGBVertex { point: Vector2([ 0.5, -0.5]), color: Vector3([ 1.0,  0.0,  0.0]) },
     Point2DColorRGBVertex { point: Vector2([ 0.5,  0.5]), color: Vector3([ 0.0,  1.0,  0.0]) },
     Point2DColorRGBVertex { point: Vector2([-0.5,  0.5]), color: Vector3([ 0.0,  0.0,  1.0]) },
+    Point2DColorRGBVertex { point: Vector2([-0.5, -0.5]), color: Vector3([ 1.0,  0.0,  0.0]) },
 ];
 
 pub struct Renderer {
@@ -102,6 +103,7 @@ pub struct Renderer {
     current_frame: usize,
 
     test_vertex_buffer: VirtualBuffer,
+    test_index_buffer: VirtualBuffer,
 }
 
 impl Renderer {
@@ -353,10 +355,15 @@ impl Renderer {
             .len()
             .checked_mul(std::mem::size_of::<Point2DColorRGBVertex>())
             .unwrap();
+
         let test_vertex_buffer = unsafe {
             let vertex_data =
                 std::slice::from_raw_parts(VERTICES.as_ptr() as *const u8, vertex_data_len);
             vk_res.create_vertex_vbuffer(vertex_data)?
+        };
+        let test_index_buffer = unsafe {
+            let indices = [0, 1, 2, 2, 3, 0u16];
+            vk_res.create_index_vbuffer(&indices)?
         };
 
         Ok(Renderer {
@@ -369,6 +376,7 @@ impl Renderer {
             current_frame: 0,
 
             test_vertex_buffer,
+            test_index_buffer,
         })
     }
 
@@ -939,13 +947,20 @@ impl Renderer {
                 &buffers,
                 &[self.test_vertex_buffer.offset],
             );
+            self.vk_res.device().cmd_bind_index_buffer(
+                cmdbuf,
+                self.test_index_buffer.buffer_handle,
+                self.test_index_buffer.offset,
+                vk::IndexType::UINT16,
+            );
             self.vk_res
                 .device()
                 .cmd_set_viewport(cmdbuf, 0, &[viewport]);
             self.vk_res.device().cmd_set_scissor(cmdbuf, 0, &[scissor]);
             self.vk_res
                 .device()
-                .cmd_draw(cmdbuf, VERTICES.len().try_into().unwrap(), 1, 0, 0);
+                // .cmd_draw(cmdbuf, VERTICES.len().try_into().unwrap(), 1, 0, 0);
+                .cmd_draw_indexed(cmdbuf, 6, 1, 0, 0, 0);
 
             self.vk_res.device().cmd_end_render_pass(cmdbuf);
 

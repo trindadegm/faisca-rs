@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 
-use crate::{renderer::RendererError, util::OnDropDefer};
+use crate::{renderer::{resources::RendererResourceKeeper, RendererError}, util::OnDropDefer};
 use ash::vk;
-
-use super::resources::RendererResourceKeeper;
 
 const KIBIBYTE: vk::DeviceSize = 1024;
 const MEBIBYTE: vk::DeviceSize = KIBIBYTE * KIBIBYTE;
 
-const DEFAULT_VERTEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
 const DEFAULT_STAGING_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
+const DEFAULT_VERTEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
+const DEFAULT_INDEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
 
 #[derive(Clone, Copy, Debug)]
 struct AllocRecord {
@@ -29,6 +28,7 @@ struct BufferRecord {
 pub enum BufferType {
     Staging,
     Vertex,
+    Index,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +38,7 @@ pub struct VirtualBuffer {
     pub buffer_handle: vk::Buffer,
     pub size: vk::DeviceSize,
     pub offset: vk::DeviceSize,
+    _private_member: (),
 }
 
 struct SpecificBufferManager {
@@ -94,6 +95,14 @@ impl BufferManager {
         self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Vertex)
     }
 
+    pub unsafe fn alloc_index_vbuffer(
+        &mut self,
+        vk_res: &RendererResourceKeeper,
+        vbuffer_size: vk::DeviceSize,
+    ) -> Result<VirtualBuffer, RendererError> {
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Index)
+    }
+
     unsafe fn alloc_vbuffer(
         &mut self,
         vk_res: &RendererResourceKeeper,
@@ -140,6 +149,7 @@ impl BufferManager {
                 size: vbuffer_size,
                 buffer_handle: sm.buffers[index].handle,
                 offset,
+                _private_member: (),
             })
     }
 
@@ -151,6 +161,8 @@ impl BufferManager {
         size: vk::DeviceSize,
         buffer_type: BufferType,
     ) -> Result<usize, RendererError> {
+        log::debug!("Creating a new {buffer_type:?} buffer. Size = {size}");
+
         let instance = vk_res.instance();
         let device = vk_res.device();
         let physical_device = vk_res.physical_device();
@@ -166,7 +178,7 @@ impl BufferManager {
             .create_buffer(&buffer_info, None)
             .map_err(RendererError::FailedToCreateBuffer)?;
         let buffer_defer = OnDropDefer::new(buffer, |b| {
-            log::info!("Deferred drop of buffer");
+            log::warn!("Deferred drop of buffer");
             device.destroy_buffer(b, None);
         });
 
@@ -196,7 +208,7 @@ impl BufferManager {
             .allocate_memory(&alloc_info, None)
             .map_err(RendererError::MemAllocError)?;
         let device_memory_defer = OnDropDefer::new(device_memory, |dm| {
-            log::info!("Deferred drop of allocated device memory");
+            log::warn!("Deferred drop of allocated device memory");
             device.free_memory(dm, None);
         });
 
@@ -225,19 +237,23 @@ impl BufferManager {
 
     fn buffer_type_usage(buffer_type: BufferType) -> vk::BufferUsageFlags {
         match buffer_type {
+            BufferType::Staging => vk::BufferUsageFlags::TRANSFER_SRC,
             BufferType::Vertex => {
                 vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
             }
-            BufferType::Staging => vk::BufferUsageFlags::TRANSFER_SRC,
+            BufferType::Index => {
+                vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
+            }
         }
     }
 
     fn buffer_type_mem_props(buffer_type: BufferType) -> vk::MemoryPropertyFlags {
         match buffer_type {
-            BufferType::Vertex => vk::MemoryPropertyFlags::DEVICE_LOCAL,
             BufferType::Staging => {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
             }
+            BufferType::Vertex => vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            BufferType::Index => vk::MemoryPropertyFlags::DEVICE_LOCAL,
         }
     }
 
@@ -298,6 +314,19 @@ impl BufferManager {
             .get(&vbuffer.buffer_type)
             .map(|sm| sm.buffers[vbuffer.buffer_idx].alloc_idx)
             .unwrap()
+    }
+
+    pub unsafe fn free_vbuffer(&mut self, vbuffer: VirtualBuffer) -> Result<(), RendererError> {
+        let sm = self.specific_managers.get_mut(&vbuffer.buffer_type).unwrap();
+
+        let table = &mut sm.buffer_tables[vbuffer.buffer_idx];
+
+        table.free(vbuffer.offset);
+        if table.allocs.len() == 1 {
+            debug_assert_eq!(table.allocs[0].status, BufferAllocCellStatus::Free);
+        }
+
+        Ok(())
     }
 
     /// Destroy all the buffers and frees all of the memory.
@@ -434,6 +463,7 @@ impl BufferType {
         match self {
             Staging => DEFAULT_STAGING_BUFFER_SIZE,
             Vertex => DEFAULT_VERTEX_BUFFER_SIZE,
+            Index => DEFAULT_INDEX_BUFFER_SIZE,
         }
     }
 }

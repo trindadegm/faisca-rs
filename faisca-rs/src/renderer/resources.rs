@@ -465,8 +465,51 @@ impl RendererResourceKeeper {
         buffer_manager.direct_upload(self, &staging_buf, vertex_data)?;
 
         let vbuffer =
-            buffer_manager.alloc_vertex_vbuffer(self, vertex_data.len().try_into().unwrap())?;
+            buffer_manager.alloc_vertex_vbuffer(self, data_size)?;
 
+        drop(buffer_manager);
+
+        self.buf_copy_op(&staging_buf, &vbuffer, data_size)?;
+
+        Ok(vbuffer)
+    }
+
+    pub unsafe fn create_index_vbuffer(
+        &mut self,
+        indices: &[u16],
+    ) -> Result<VirtualBuffer, RendererError> {
+        let byte_len = indices.len().checked_mul(2).unwrap();
+        let data = std::slice::from_raw_parts(indices.as_ptr() as *const u8, byte_len);
+
+        let data_size: vk::DeviceSize = data.len().try_into().unwrap();
+
+        if data_size > STAGING_BUFFER_SIZE {
+            return Err(RendererError::ObjectTooBig)
+        }
+
+        let mut buffer_manager = self.buffer_manager.borrow_mut();
+
+        let staging_buf = self.staging_buf
+            .map_or_else(|| {
+                buffer_manager.alloc_staging_vbuffer(self, STAGING_BUFFER_SIZE)
+            }, Ok)?;
+        if self.staging_buf.is_none() {
+            self.staging_buf = Some(staging_buf);
+        }
+
+        buffer_manager.direct_upload(self, &staging_buf, data)?;
+
+        let vbuffer =
+            buffer_manager.alloc_index_vbuffer(self, data_size)?;
+
+        drop(buffer_manager);
+
+        self.buf_copy_op(&staging_buf, &vbuffer, data_size)?;
+
+        Ok(vbuffer)
+    }
+
+    unsafe fn buf_copy_op(&mut self, src_buf: &VirtualBuffer, dst_buf: &VirtualBuffer, data_size: vk::DeviceSize) -> Result<(), RendererError> {
         // Let us do a transfer op
         let graphics_queue = self
             .device()
@@ -496,12 +539,12 @@ impl RendererResourceKeeper {
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
 
         let copy_region = vk::BufferCopy {
-            src_offset: staging_buf.offset,
-            dst_offset: vbuffer.offset,
+            src_offset: src_buf.offset,
+            dst_offset: dst_buf.offset,
             size: data_size,
         };
 
-        self.device().cmd_copy_buffer(cmd_buf, staging_buf.buffer_handle, vbuffer.buffer_handle, &[copy_region]);
+        self.device().cmd_copy_buffer(cmd_buf, src_buf.buffer_handle, dst_buf.buffer_handle, &[copy_region]);
 
         self.device().end_command_buffer(cmd_buf)
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
@@ -516,7 +559,7 @@ impl RendererResourceKeeper {
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
         self.device().queue_wait_idle(graphics_queue);
 
-        Ok(vbuffer)
+        Ok(())
     }
 }
 impl Default for RendererResourceKeeper {
