@@ -9,6 +9,7 @@ const KIBIBYTE: vk::DeviceSize = 1024;
 const MEBIBYTE: vk::DeviceSize = KIBIBYTE * KIBIBYTE;
 
 const DEFAULT_VERTEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
+const DEFAULT_STAGING_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
 
 #[derive(Clone, Copy, Debug)]
 struct AllocRecord {
@@ -106,7 +107,7 @@ impl BufferManager {
                 buffers: Vec::new(),
                 buffer_mem_properties: Vec::new(),
                 buffer_tables: Vec::new(),
-                buffer_default_size: DEFAULT_VERTEX_BUFFER_SIZE,
+                buffer_default_size: buffer_type.default_size(),
             });
 
         sm.buffer_tables
@@ -341,14 +342,20 @@ impl BufferAllocTable {
 
     pub fn try_fit(&mut self, mut req_size: vk::DeviceSize) -> Option<vk::DeviceSize> {
         // Guarantee alignemnt of the next block by increasing this one's size
-        req_size += req_size % self.alignment_requirement;
+        let align_remainder = req_size % self.alignment_requirement;
+        if align_remainder > 0 {
+            req_size += self.alignment_requirement - align_remainder;
+        }
 
         let mut offset: vk::DeviceSize = 0;
         for (index, cell) in self.allocs.iter_mut().enumerate() {
             if cell.status == BufferAllocCellStatus::Free {
                 if cell.length >= req_size {
-                    cell.status = BufferAllocCellStatus::Occupied;
                     let remaining_length = cell.length - req_size;
+
+                    cell.status = BufferAllocCellStatus::Occupied;
+                    cell.length = req_size;
+
                     if remaining_length > 0 {
                         let new_cell = BufferAllocCell {
                             length: remaining_length,
@@ -365,5 +372,106 @@ impl BufferAllocTable {
         }
 
         None
+    }
+
+    pub fn free(&mut self, position: vk::DeviceSize) {
+        let mut offset: vk::DeviceSize = 0;
+        for index in 0..self.allocs.len() {
+            if position == offset && self.allocs[index].status == BufferAllocCellStatus::Occupied {
+                self.allocs[index].status = BufferAllocCellStatus::Free;
+
+                self.collapse_around(index);
+
+                return;
+            }
+
+            offset = offset.checked_add(self.allocs[index].length).unwrap();
+        }
+    }
+
+    fn collapse_around(&mut self, index: usize) {
+        let mut length: vk::DeviceSize = 0;
+        let mut n_to_collapse = 0usize;
+        let mut first_idx = index;
+
+        index.checked_add(1)
+            .and_then(|i| {
+                self.allocs.get(i)
+                    .map(|c| {
+                        if c.status == BufferAllocCellStatus::Free {
+                            n_to_collapse += 1;
+                            length = length.checked_add(c.length).unwrap();
+                        }
+                    })
+            });
+
+        self.allocs.get(index)
+            .map(|c| length = length.checked_add(c.length).unwrap());
+
+        index.checked_sub(1)
+            .and_then(|i| {
+                self.allocs.get(i)
+                    .map(|c| {
+                        if c.status == BufferAllocCellStatus::Free {
+                            n_to_collapse += 1;
+                            first_idx = i;
+                            length = length.checked_add(c.length).unwrap();
+                        }
+                    })
+            });
+
+        self.allocs[first_idx].length = length;
+        for delta_idx in (1..=n_to_collapse).rev() {
+            let idx_to_remove = first_idx + delta_idx;
+            self.allocs.remove(idx_to_remove);
+        }
+    }
+}
+
+impl BufferType {
+    pub fn default_size(self) -> vk::DeviceSize {
+        use BufferType::*;
+        match self {
+            Staging => DEFAULT_STAGING_BUFFER_SIZE,
+            Vertex => DEFAULT_VERTEX_BUFFER_SIZE,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alloc_table_test() {
+        let size = 256;
+        let alignment = 8;
+        let mut alloc_table = BufferAllocTable::new(size, alignment);
+
+        assert!(alloc_table.try_fit(257).is_none());
+        assert_eq!(alloc_table.allocs[0].status, BufferAllocCellStatus::Free);
+        assert_eq!(alloc_table.allocs[0].length, 256);
+
+        assert_eq!(alloc_table.try_fit(256), Some(0));
+
+        alloc_table.free(0);
+
+        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+
+        assert_eq!(alloc_table.try_fit(128), Some(0));
+        assert_eq!(alloc_table.try_fit(128), Some(128));
+        assert!(alloc_table.try_fit(128).is_none());
+
+        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+
+        alloc_table.free(0);
+
+        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+
+        assert_eq!(alloc_table.try_fit(7), Some(0));
+        assert_eq!(alloc_table.try_fit(7), Some(8));
+        assert_eq!(alloc_table.try_fit(5), Some(16));
+
+        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
     }
 }
