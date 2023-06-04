@@ -9,6 +9,7 @@ const MEBIBYTE: vk::DeviceSize = KIBIBYTE * KIBIBYTE;
 const DEFAULT_STAGING_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
 const DEFAULT_VERTEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
 const DEFAULT_INDEX_BUFFER_SIZE: vk::DeviceSize = 64 * MEBIBYTE;
+const DEFAULT_UNIFIED_BUFFER_SIZE: vk::DeviceSize = 128 * MEBIBYTE;
 
 #[derive(Clone, Copy, Debug)]
 struct AllocRecord {
@@ -29,6 +30,7 @@ pub enum BufferType {
     Staging,
     Vertex,
     Index,
+    Unified,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -92,7 +94,7 @@ impl BufferManager {
         vk_res: &RendererResourceKeeper,
         vbuffer_size: vk::DeviceSize,
     ) -> Result<VirtualBuffer, RendererError> {
-        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Vertex)
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Unified)
     }
 
     pub unsafe fn alloc_index_vbuffer(
@@ -100,7 +102,7 @@ impl BufferManager {
         vk_res: &RendererResourceKeeper,
         vbuffer_size: vk::DeviceSize,
     ) -> Result<VirtualBuffer, RendererError> {
-        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Index)
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Unified)
     }
 
     unsafe fn alloc_vbuffer(
@@ -244,6 +246,12 @@ impl BufferManager {
             BufferType::Index => {
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
             }
+            BufferType::Unified => {
+                vk::BufferUsageFlags::VERTEX_BUFFER |
+                vk::BufferUsageFlags::INDEX_BUFFER |
+                vk::BufferUsageFlags::UNIFORM_BUFFER |
+                vk::BufferUsageFlags::TRANSFER_DST
+            }
         }
     }
 
@@ -254,6 +262,7 @@ impl BufferManager {
             }
             BufferType::Vertex => vk::MemoryPropertyFlags::DEVICE_LOCAL,
             BufferType::Index => vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            BufferType::Unified => vk::MemoryPropertyFlags::DEVICE_LOCAL,
         }
     }
 
@@ -464,6 +473,7 @@ impl BufferType {
             Staging => DEFAULT_STAGING_BUFFER_SIZE,
             Vertex => DEFAULT_VERTEX_BUFFER_SIZE,
             Index => DEFAULT_INDEX_BUFFER_SIZE,
+            Unified => DEFAULT_UNIFIED_BUFFER_SIZE,
         }
     }
 }
