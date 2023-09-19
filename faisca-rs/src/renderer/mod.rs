@@ -5,7 +5,7 @@ use ash::{
 };
 use std::{ffi::CStr, mem::MaybeUninit};
 
-use self::{buffer::VirtualBuffer, resources::RendererResourceKeeper};
+use self::{buffer::VirtualBuffer, resources::RendererResourceKeeper, utypes::*};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RendererError {
@@ -38,6 +38,8 @@ pub enum RendererError {
     FailedToCreateImageView(vk::Result),
     #[error("Failed to create Vulkan shader module, Vulkan error code: {0}")]
     FailedToCreateShaderModule(vk::Result),
+    #[error("Failed to create Vulkan descriptor set layout, Vulkan error code: {0}")]
+    FailedToCreateDescriptorSetLayout(vk::Result),
     #[error("Failed to create Vulkan pipeline layout, Vulkan error code: {0}")]
     FailedToCreatePipelineLayout(vk::Result),
     #[error("Failed to create Vulkan render pass, Vulkan error code: {0}")]
@@ -78,6 +80,7 @@ mod buffer;
 mod queue;
 mod resources;
 mod swapchain_info;
+pub mod utypes;
 mod vertex;
 
 const MAX_CONCURRENT_FRAMES: usize = 2;
@@ -104,6 +107,7 @@ pub struct Renderer {
 
     test_vertex_buffer: VirtualBuffer,
     test_index_buffer: VirtualBuffer,
+    test_ubo: StandardUBO,
 }
 
 impl Renderer {
@@ -314,6 +318,18 @@ impl Renderer {
 
         vk_res.create_swapchain(&swapchain_info, swapchain_img_extent)?;
 
+        let descriptor_set_layout_info = vk::DescriptorSetLayoutCreateInfo {
+            binding_count: 1,
+            p_bindings: &[StandardUBO::uniform_buffer_binding(0)] as *const _,
+            ..Default::default()
+        };
+        unsafe {
+            *vk_res.descriptor_set_layout_mut() = vk_res
+                .device()
+                .create_descriptor_set_layout(&descriptor_set_layout_info, None)
+                .map_err(RendererError::FailedToCreateDescriptorSetLayout)?
+        };
+
         unsafe {
             let (pipeline, pipeline_layout) = Self::create_graphics_pipeline(
                 vk_res.device(),
@@ -334,6 +350,21 @@ impl Renderer {
                 .device()
                 .create_command_pool(&command_pool_info, None)
                 .map_err(RendererError::FailedToCreateCommandPool)?;
+        }
+
+        // Try making a dedicated transfer command pool
+        if let Some(dedicated_family) = queue_indices.dedicated_transfer_family {
+            let command_pool_info = vk::CommandPoolCreateInfo {
+                flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                queue_family_index: dedicated_family,
+                ..Default::default()
+            };
+            unsafe {
+                *vk_res.dedicated_transfer_command_pool_mut() = vk_res
+                    .device()
+                    .create_command_pool(&command_pool_info, None)
+                    .map_err(RendererError::FailedToCreateCommandPool)?;
+            }
         }
 
         let command_buffer_info = vk::CommandBufferAllocateInfo {
@@ -377,6 +408,7 @@ impl Renderer {
 
             test_vertex_buffer,
             test_index_buffer,
+            test_ubo: StandardUBO::default(),
         })
     }
 
@@ -569,10 +601,13 @@ impl Renderer {
         let mut queue_create_infos = Vec::new();
         // Using a set, if there are any repeated queue indices, they will be
         // reduced to a single one.
-        let unique_queue_indices = std::collections::HashSet::from([
+        let mut unique_queue_indices = std::collections::HashSet::from([
             family_indices.graphics_family.unwrap(),
             family_indices.present_family.unwrap(),
         ]);
+        if let Some(family) = family_indices.dedicated_transfer_family {
+            unique_queue_indices.insert(family);
+        }
 
         let priority = 1.0_f32;
         for unique_queue_index in unique_queue_indices {

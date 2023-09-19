@@ -4,6 +4,7 @@ use ash::{extensions::khr, vk};
 pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
     pub present_family: Option<u32>,
+    pub dedicated_transfer_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
@@ -18,20 +19,46 @@ impl QueueFamilyIndices {
         let properties =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
 
-        for (i, prop) in properties.iter().enumerate() {
+        let unified_graphics_and_present = properties.iter().enumerate().find(|&(i, prop)| {
             let i: u32 = i.try_into().unwrap();
-            if prop.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                queue_family_indices.graphics_family = Some(i)
-            }
 
-            queue_family_indices.present_family = unsafe {
+            prop.queue_flags.contains(vk::QueueFlags::GRAPHICS) && unsafe {
                 surface_loader.get_physical_device_surface_support(physical_device, i, surface)
+                    .unwrap_or(false)
             }
-            .ok()
-            .map(|_| i);
+        })
+        .map(|(i, _)| i.try_into().unwrap());
 
-            if queue_family_indices.has_all() {
-                break;
+        if let Some(family) = unified_graphics_and_present {
+            queue_family_indices.graphics_family = Some(family);
+            queue_family_indices.present_family = Some(family);
+        }
+
+        queue_family_indices.dedicated_transfer_family = properties
+            .iter()
+            .enumerate()
+            .find(|(_, prop)| {
+                prop.queue_flags.contains(vk::QueueFlags::TRANSFER) &&
+                (!prop.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            })
+            .map(|(i, _)| i.try_into().unwrap());
+
+        if !queue_family_indices.has_all() {
+            for (i, prop) in properties.iter().enumerate() {
+                let i: u32 = i.try_into().unwrap();
+                if prop.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                    queue_family_indices.graphics_family = Some(i)
+                }
+
+                queue_family_indices.present_family = unsafe {
+                    surface_loader.get_physical_device_surface_support(physical_device, i, surface)
+                }
+                .ok()
+                .map(|_| i);
+
+                if queue_family_indices.has_all() {
+                    break;
+                }
             }
         }
 
@@ -47,6 +74,7 @@ impl QueueFamilyIndices {
         Self {
             present_family: None,
             graphics_family: None,
+            dedicated_transfer_family: None,
         }
     }
 }

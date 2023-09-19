@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{renderer::{resources::RendererResourceKeeper, RendererError}, util::OnDropDefer};
+use crate::{
+    renderer::{resources::RendererResourceKeeper, RendererError},
+    util::OnDropDefer,
+};
 use ash::vk;
 
 const KIBIBYTE: vk::DeviceSize = 1024;
@@ -98,6 +101,14 @@ impl BufferManager {
     }
 
     pub unsafe fn alloc_index_vbuffer(
+        &mut self,
+        vk_res: &RendererResourceKeeper,
+        vbuffer_size: vk::DeviceSize,
+    ) -> Result<VirtualBuffer, RendererError> {
+        self.alloc_vbuffer(vk_res, vbuffer_size, BufferType::Unified)
+    }
+
+    pub unsafe fn alloc_uniform_vbuffer(
         &mut self,
         vk_res: &RendererResourceKeeper,
         vbuffer_size: vk::DeviceSize,
@@ -247,10 +258,10 @@ impl BufferManager {
                 vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
             }
             BufferType::Unified => {
-                vk::BufferUsageFlags::VERTEX_BUFFER |
-                vk::BufferUsageFlags::INDEX_BUFFER |
-                vk::BufferUsageFlags::UNIFORM_BUFFER |
-                vk::BufferUsageFlags::TRANSFER_DST
+                vk::BufferUsageFlags::VERTEX_BUFFER
+                    | vk::BufferUsageFlags::INDEX_BUFFER
+                    | vk::BufferUsageFlags::UNIFORM_BUFFER
+                    | vk::BufferUsageFlags::TRANSFER_DST
             }
         }
     }
@@ -326,7 +337,10 @@ impl BufferManager {
     }
 
     pub unsafe fn free_vbuffer(&mut self, vbuffer: VirtualBuffer) -> Result<(), RendererError> {
-        let sm = self.specific_managers.get_mut(&vbuffer.buffer_type).unwrap();
+        let sm = self
+            .specific_managers
+            .get_mut(&vbuffer.buffer_type)
+            .unwrap();
 
         let table = &mut sm.buffer_tables[vbuffer.buffer_idx];
 
@@ -432,31 +446,28 @@ impl BufferAllocTable {
         let mut n_to_collapse = 0usize;
         let mut first_idx = index;
 
-        index.checked_add(1)
-            .and_then(|i| {
-                self.allocs.get(i)
-                    .map(|c| {
-                        if c.status == BufferAllocCellStatus::Free {
-                            n_to_collapse += 1;
-                            length = length.checked_add(c.length).unwrap();
-                        }
-                    })
-            });
+        index.checked_add(1).and_then(|i| {
+            self.allocs.get(i).map(|c| {
+                if c.status == BufferAllocCellStatus::Free {
+                    n_to_collapse += 1;
+                    length = length.checked_add(c.length).unwrap();
+                }
+            })
+        });
 
-        self.allocs.get(index)
+        self.allocs
+            .get(index)
             .map(|c| length = length.checked_add(c.length).unwrap());
 
-        index.checked_sub(1)
-            .and_then(|i| {
-                self.allocs.get(i)
-                    .map(|c| {
-                        if c.status == BufferAllocCellStatus::Free {
-                            n_to_collapse += 1;
-                            first_idx = i;
-                            length = length.checked_add(c.length).unwrap();
-                        }
-                    })
-            });
+        index.checked_sub(1).and_then(|i| {
+            self.allocs.get(i).map(|c| {
+                if c.status == BufferAllocCellStatus::Free {
+                    n_to_collapse += 1;
+                    first_idx = i;
+                    length = length.checked_add(c.length).unwrap();
+                }
+            })
+        });
 
         self.allocs[first_idx].length = length;
         for delta_idx in (1..=n_to_collapse).rev() {
@@ -496,22 +507,50 @@ mod tests {
 
         alloc_table.free(0);
 
-        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+        assert_eq!(
+            alloc_table
+                .allocs
+                .iter()
+                .map(|c| c.length)
+                .fold(0, |x, a| x + a),
+            256
+        );
 
         assert_eq!(alloc_table.try_fit(128), Some(0));
         assert_eq!(alloc_table.try_fit(128), Some(128));
         assert!(alloc_table.try_fit(128).is_none());
 
-        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+        assert_eq!(
+            alloc_table
+                .allocs
+                .iter()
+                .map(|c| c.length)
+                .fold(0, |x, a| x + a),
+            256
+        );
 
         alloc_table.free(0);
 
-        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+        assert_eq!(
+            alloc_table
+                .allocs
+                .iter()
+                .map(|c| c.length)
+                .fold(0, |x, a| x + a),
+            256
+        );
 
         assert_eq!(alloc_table.try_fit(7), Some(0));
         assert_eq!(alloc_table.try_fit(7), Some(8));
         assert_eq!(alloc_table.try_fit(5), Some(16));
 
-        assert_eq!(alloc_table.allocs.iter().map(|c| c.length).fold(0, |x, a| x + a), 256);
+        assert_eq!(
+            alloc_table
+                .allocs
+                .iter()
+                .map(|c| c.length)
+                .fold(0, |x, a| x + a),
+            256
+        );
     }
 }

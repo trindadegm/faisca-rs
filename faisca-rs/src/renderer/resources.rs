@@ -14,7 +14,7 @@ use ash::{
     extensions::{ext, khr},
     vk,
 };
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{cell::RefCell, collections::HashMap};
 
 const STAGING_BUFFER_SIZE: vk::DeviceSize = 16 * 1024 * 1024;
 
@@ -39,12 +39,15 @@ pub struct RendererResourceKeeper {
 
     render_pass: vk::RenderPass,
 
+    std_ubo_descriptor_set_layout: vk::DescriptorSetLayout,
+
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
 
     framebuffers: Vec<vk::Framebuffer>,
 
     command_pool: vk::CommandPool,
+    dedicated_transfer_command_pool: vk::CommandPool,
 
     img_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
@@ -190,6 +193,16 @@ impl RendererResourceKeeper {
     }
 
     #[inline]
+    pub fn descriptor_set_layout(&self) -> vk::DescriptorSetLayout {
+        self.std_ubo_descriptor_set_layout
+    }
+
+    #[inline]
+    pub unsafe fn descriptor_set_layout_mut(&mut self) -> &mut vk::DescriptorSetLayout {
+        &mut self.std_ubo_descriptor_set_layout
+    }
+
+    #[inline]
     pub fn pipeline_layout(&self) -> vk::PipelineLayout {
         self.pipeline_layout
     }
@@ -227,6 +240,16 @@ impl RendererResourceKeeper {
     #[inline]
     pub unsafe fn command_pool_mut(&mut self) -> &mut vk::CommandPool {
         &mut self.command_pool
+    }
+
+    #[inline]
+    pub fn dedicated_transfer_command_pool(&self) -> vk::CommandPool {
+        self.dedicated_transfer_command_pool
+    }
+
+    #[inline]
+    pub unsafe fn dedicated_transfer_command_pool_mut(&mut self) -> &mut vk::CommandPool {
+        &mut self.dedicated_transfer_command_pool
     }
 
     #[inline]
@@ -443,29 +466,33 @@ impl RendererResourceKeeper {
         }
     }
 
+    unsafe fn get_staging_vbuffer(&self) -> Result<VirtualBuffer, RendererError> {
+        let mut buffer_manager = self.buffer_manager.borrow_mut();
+
+        let staging_buf = self.staging_buf.map_or_else(
+            || buffer_manager.alloc_staging_vbuffer(self, STAGING_BUFFER_SIZE),
+            Ok,
+        )?;
+
+        Ok(staging_buf)
+    }
+
     pub unsafe fn create_vertex_vbuffer(
         &mut self,
         vertex_data: &[u8],
     ) -> Result<VirtualBuffer, RendererError> {
         let data_size: vk::DeviceSize = vertex_data.len().try_into().unwrap();
         if data_size > STAGING_BUFFER_SIZE {
-            return Err(RendererError::ObjectTooBig)
+            return Err(RendererError::ObjectTooBig);
         }
+
+        let staging_buf = self.get_staging_vbuffer()?;
 
         let mut buffer_manager = self.buffer_manager.borrow_mut();
 
-        let staging_buf = self.staging_buf
-            .map_or_else(|| {
-                buffer_manager.alloc_staging_vbuffer(self, STAGING_BUFFER_SIZE)
-            }, Ok)?;
-        if self.staging_buf.is_none() {
-            self.staging_buf = Some(staging_buf);
-        }
-
         buffer_manager.direct_upload(self, &staging_buf, vertex_data)?;
 
-        let vbuffer =
-            buffer_manager.alloc_vertex_vbuffer(self, data_size)?;
+        let vbuffer = buffer_manager.alloc_vertex_vbuffer(self, data_size)?;
 
         drop(buffer_manager);
 
@@ -484,23 +511,16 @@ impl RendererResourceKeeper {
         let data_size: vk::DeviceSize = data.len().try_into().unwrap();
 
         if data_size > STAGING_BUFFER_SIZE {
-            return Err(RendererError::ObjectTooBig)
+            return Err(RendererError::ObjectTooBig);
         }
+
+        let staging_buf = self.get_staging_vbuffer()?;
 
         let mut buffer_manager = self.buffer_manager.borrow_mut();
 
-        let staging_buf = self.staging_buf
-            .map_or_else(|| {
-                buffer_manager.alloc_staging_vbuffer(self, STAGING_BUFFER_SIZE)
-            }, Ok)?;
-        if self.staging_buf.is_none() {
-            self.staging_buf = Some(staging_buf);
-        }
-
         buffer_manager.direct_upload(self, &staging_buf, data)?;
 
-        let vbuffer =
-            buffer_manager.alloc_index_vbuffer(self, data_size)?;
+        let vbuffer = buffer_manager.alloc_index_vbuffer(self, data_size)?;
 
         drop(buffer_manager);
 
@@ -509,25 +529,77 @@ impl RendererResourceKeeper {
         Ok(vbuffer)
     }
 
-    unsafe fn buf_copy_op(&mut self, src_buf: &VirtualBuffer, dst_buf: &VirtualBuffer, data_size: vk::DeviceSize) -> Result<(), RendererError> {
+    pub unsafe fn create_uniform_vbuffer(
+        &mut self,
+        data: &[u8],
+    ) -> Result<VirtualBuffer, RendererError> {
+        let data_size: vk::DeviceSize = data.len().try_into().unwrap();
+        if data_size > STAGING_BUFFER_SIZE {
+            return Err(RendererError::ObjectTooBig);
+        }
+
+        let staging_buf = self.get_staging_vbuffer()?;
+
+        let mut buffer_manager = self.buffer_manager.borrow_mut();
+
+        buffer_manager.direct_upload(self, &staging_buf, data)?;
+
+        let vbuffer = buffer_manager.alloc_uniform_vbuffer(self, data_size)?;
+
+        drop(buffer_manager);
+
+        self.buf_copy_op(&staging_buf, &vbuffer, data_size)?;
+
+        Ok(vbuffer)
+    }
+
+    pub unsafe fn update_vbuffer(
+        &self,
+        vbuffer: &mut VirtualBuffer,
+    ) -> Result<(), RendererError> {
+
+        Ok(())
+    }
+
+    unsafe fn buf_copy_op(
+        &mut self,
+        src_buf: &VirtualBuffer,
+        dst_buf: &VirtualBuffer,
+        data_size: vk::DeviceSize,
+    ) -> Result<(), RendererError> {
         // Let us do a transfer op
-        let graphics_queue = self
+        let transfer_queue = self
             .device()
-            .get_device_queue(self.queue_families().graphics_family.unwrap(), 0);
+            .get_device_queue(
+                self.queue_families()
+                    .dedicated_transfer_family
+                    .or(self.queue_families().graphics_family)
+                    .unwrap(),
+                0,
+            );
+
+        let command_pool = if self.dedicated_transfer_command_pool() != vk::CommandPool::null() {
+            self.dedicated_transfer_command_pool()
+        } else {
+            self.command_pool()
+        };
 
         let cmd_buf_info = vk::CommandBufferAllocateInfo {
             level: vk::CommandBufferLevel::PRIMARY,
-            command_pool: self.command_pool(),
+            command_pool: command_pool,
             command_buffer_count: 1,
             ..Default::default()
         };
 
-        let cmd_buf_alloc = self.device().allocate_command_buffers(&cmd_buf_info)
+        let cmd_buf_alloc = self
+            .device()
+            .allocate_command_buffers(&cmd_buf_info)
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
         let cmd_buf = cmd_buf_alloc[0];
 
         let cmd_buf_defer = OnDropDefer::new(cmd_buf, |cb| {
-            self.device().free_command_buffers(self.command_pool(), &[cb]);
+            self.device()
+                .free_command_buffers(command_pool, &[cb]);
         });
 
         let cmd_buf_begin_info = vk::CommandBufferBeginInfo {
@@ -535,7 +607,8 @@ impl RendererResourceKeeper {
             ..Default::default()
         };
 
-        self.device().begin_command_buffer(cmd_buf, &cmd_buf_begin_info)
+        self.device()
+            .begin_command_buffer(cmd_buf, &cmd_buf_begin_info)
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
 
         let copy_region = vk::BufferCopy {
@@ -544,9 +617,15 @@ impl RendererResourceKeeper {
             size: data_size,
         };
 
-        self.device().cmd_copy_buffer(cmd_buf, src_buf.buffer_handle, dst_buf.buffer_handle, &[copy_region]);
+        self.device().cmd_copy_buffer(
+            cmd_buf,
+            src_buf.buffer_handle,
+            dst_buf.buffer_handle,
+            &[copy_region],
+        );
 
-        self.device().end_command_buffer(cmd_buf)
+        self.device()
+            .end_command_buffer(cmd_buf)
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
 
         let submit_info = vk::SubmitInfo {
@@ -555,9 +634,10 @@ impl RendererResourceKeeper {
             ..Default::default()
         };
 
-        self.device().queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
+        self.device()
+            .queue_submit(transfer_queue, &[submit_info], vk::Fence::null())
             .map_err(RendererError::FailedToCreateCommandBuffer)?;
-        self.device().queue_wait_idle(graphics_queue);
+        self.device().queue_wait_idle(transfer_queue);
 
         Ok(())
     }
@@ -584,12 +664,15 @@ impl Default for RendererResourceKeeper {
 
             render_pass: vk::RenderPass::null(),
 
+            std_ubo_descriptor_set_layout: vk::DescriptorSetLayout::null(),
+
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
 
             framebuffers: Vec::new(),
 
             command_pool: vk::CommandPool::null(),
+            dedicated_transfer_command_pool: vk::CommandPool::null(),
 
             img_available_semaphores: Vec::new(),
             render_finished_semaphores: Vec::new(),
@@ -624,7 +707,15 @@ impl Drop for RendererResourceKeeper {
             }
 
             log::debug!("Destroying Vulkan command pool");
+            unsafe { self.device().destroy_command_pool(self.dedicated_transfer_command_pool, None) };
+            log::debug!("Destroying Vulkan command pool");
             unsafe { self.device().destroy_command_pool(self.command_pool, None) };
+
+            log::debug!("Destroying Vulkan descriptor set layout");
+            unsafe {
+                self.device()
+                    .destroy_descriptor_set_layout(self.std_ubo_descriptor_set_layout, None)
+            };
 
             log::debug!("Destroying Vulkan pipeline");
             unsafe { self.device().destroy_pipeline(self.pipeline, None) };
@@ -654,8 +745,10 @@ impl Drop for RendererResourceKeeper {
         }
 
         if let Some(debug_loader) = &self.debug_loader {
+            if self.debug_messenger != vk::DebugUtilsMessengerEXT::null() {
             log::debug!("Destroying Vulkan debug utils");
-            unsafe { debug_loader.destroy_debug_utils_messenger(self.debug_messenger, None) };
+                unsafe { debug_loader.destroy_debug_utils_messenger(self.debug_messenger, None) };
+            }
         }
 
         if let Some(instance) = &self.instance {
